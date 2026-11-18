@@ -2,9 +2,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 /* ---------- constantes ---------- */
-const N = 20, CELL = 2, FH = 1.1, MAXH = 16;
-const HALF = N * CELL / 2;
-const wx = i => i * CELL - HALF + CELL / 2;
+const CELL = 2, FH = 1.1, MAXH = 16;
+// El mapa empieza en 20×20 y crece cuando se construye cerca del borde.
+const START = { x0:-10, x1:9, z0:-10, z1:9 };
+const EDGE = 3;        // a cuántas celdas del borde se dispara la expansión
+const GROW = 6;        // cuántas celdas se agregan de ese lado
+const MAXSPAN = 90;    // tamaño máximo por lado
+const wx = i => i * CELL + CELL / 2;
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
 const PALETTE = ['#ece6da','#c8553d','#f2b880','#7fa99b','#5b7db1','#3d4250','#e8c547','#d98ba6'];
 const AWN = ['#d1495b','#edae49','#00798c','#30638e','#f6f1e7','#7a9e7e'];
@@ -158,7 +162,7 @@ function stepEnv(dt) {
   scene.background.copy(env.sky); scene.fog.color.copy(env.sky);
   document.body.style.background = '#' + env.sky.getHexString();
   hemi.color.copy(env.hs); hemi.groundColor.copy(env.hg); hemi.intensity = env.hi;
-  sun.color.copy(env.sc); sun.intensity = env.si; sun.position.copy(env.sp);
+  sun.color.copy(env.sc); sun.intensity = env.si; sun.position.copy(env.sp).add(sun.target.position);
   WATER.color.copy(env.water);
   for (const m of facadeMats) m.emissiveIntensity = env.E;
   BULB.emissiveIntensity = env.E * 2.6;
@@ -166,28 +170,75 @@ function stepEnv(dt) {
 }
 
 /* ---------- terreno ---------- */
-const water = new THREE.Mesh(new THREE.PlaneGeometry(600,600), WATER);
+const water = new THREE.Mesh(new THREE.PlaneGeometry(2400,2400), WATER);
 water.rotation.x = -Math.PI/2; water.position.y = -.4; water.receiveShadow = true;
 scene.add(water);
 const sand = new THREE.Mesh(BOX, plain('#e9d9b4'));
-sand.scale.set(N*CELL+7, 1, N*CELL+7); sand.position.y = -.72; sand.receiveShadow = true;
+sand.position.y = -.72; sand.receiveShadow = true;
 scene.add(sand);
 const island = new THREE.Mesh(BOX, plain('#a6c97f'));
-island.scale.set(N*CELL+3, 1.2, N*CELL+3); island.position.y = -.6; island.receiveShadow = true;
+island.position.y = -.6; island.receiveShadow = true;
 island.userData.pick = { ground:true };
 scene.add(island);
 
-/* ---------- estado de la ciudad ---------- */
-let cells = [];
-const newCells = () => Array.from({length:N*N}, () => ({ f:[], park:false }));
-const inb = (x,z) => x>=0 && z>=0 && x<N && z<N;
-const cell = (x,z) => cells[z*N + x];
+/* ---------- estado de la ciudad (mapa que crece) ---------- */
+let B = { ...START };                 // límites actuales, inclusive
+let cells = new Map();                // solo celdas con algo construido
+const key = (x,z) => (x + 2048) * 4096 + (z + 2048);
+const inb = (x,z) => x >= B.x0 && x <= B.x1 && z >= B.z0 && z <= B.z1;
+const EMPTY = Object.freeze({ f:Object.freeze([]), park:false });
+const cell = (x,z) => cells.get(key(x,z)) || EMPTY;
+function cellW(x,z) { const k = key(x,z); let c = cells.get(k); if (!c) { c = { f:[], park:false }; cells.set(k, c); } return c; }
+function tidy(x,z) { const c = cells.get(key(x,z)); if (c && !c.f.length && !c.park) cells.delete(key(x,z)); }
 const H = (x,z) => inb(x,z) ? cell(x,z).f.length : 0;
-let CL = [], streetList = [];
-const cls = (x,z) => inb(x,z) ? CL[z*N+x] : 'v';
+let CL = new Map(), streetList = [];
+const cls = (x,z) => inb(x,z) ? (CL.get(key(x,z)) || 'm') : 'v';
+const center = () => ({ x:(wx(B.x0) + wx(B.x1))/2, z:(wx(B.z0) + wx(B.z1))/2 });
+const span = () => Math.max(B.x1 - B.x0 + 1, B.z1 - B.z0 + 1);
+
+// la isla se agranda con una animación suave
+const islandNow = { x:0, z:0, sx:0, sz:0 };
+function islandTarget() {
+  return { x:center().x, z:center().z, sx:(B.x1-B.x0+1)*CELL + 3, sz:(B.z1-B.z0+1)*CELL + 3 };
+}
+function applyIsland() {
+  island.position.x = sand.position.x = islandNow.x;
+  island.position.z = sand.position.z = islandNow.z;
+  island.scale.set(islandNow.sx, 1.2, islandNow.sz);
+  sand.scale.set(islandNow.sx + 4, 1, islandNow.sz + 4);
+}
+function snapIsland() { Object.assign(islandNow, islandTarget()); applyIsland(); fitWorld(); }
+function stepIsland(dt) {
+  const t = islandTarget(), k = 1 - Math.exp(-dt*3);
+  for (const p of ['x','z','sx','sz']) islandNow[p] += (t[p] - islandNow[p]) * k;
+  applyIsland();
+}
+// cámara, sombras y niebla acompañan el tamaño del mapa
+function fitWorld() {
+  const c = center(), half = span()*CELL/2;
+  sun.target.position.set(c.x, 0, c.z);
+  Object.assign(sun.shadow.camera, { left:-half-6, right:half+6, top:half+6, bottom:-half-6, far:160 + half*2 });
+  sun.shadow.camera.updateProjectionMatrix();
+  controls.maxDistance = Math.max(120, half*4.2);
+  scene.fog.near = Math.max(90, half*3); scene.fog.far = Math.max(200, half*7);
+  camera.far = Math.max(500, half*12); camera.updateProjectionMatrix();
+}
 function computeClasses() {
-  CL = new Array(N*N); streetList = [];
-  for (let z=0; z<N; z++) for (let x=0; x<N; x++) {
+  CL = new Map(); streetList = [];
+  // solo hace falta mirar alrededor de lo construido; el resto es pradera
+  const seen = new Set();
+  for (const [k0, c0] of cells) {
+    const x0 = Math.floor(k0 / 4096) - 2048, z0 = (k0 % 4096) - 2048;
+    for (let dz=-1; dz<=1; dz++) for (let dx=-1; dx<=1; dx++) {
+      const x = x0+dx, z = z0+dz, kk = key(x,z);
+      if (!inb(x,z) || seen.has(kk)) continue;
+      seen.add(kk);
+      classify(x, z);
+    }
+  }
+}
+function classify(x, z) {
+  {
     const c = cell(x,z); let k;
     if (c.f.length) k = 'b';
     else if (c.park) k = 'p';
@@ -196,14 +247,19 @@ function computeClasses() {
       k = 'm';
       for (let dz=-1; dz<=1 && k==='m'; dz++) for (let dx=-1; dx<=1; dx++) if (H(x+dx,z+dz) > 0) { k = 's'; break; }
     }
-    CL[z*N+x] = k;
+    CL.set(key(x,z), k);
     if (k === 's') streetList.push([x,z]);
   }
 }
 
 const cityRoot = new THREE.Group(); scene.add(cityRoot);
-const groups = [];
-for (let z=0; z<N; z++) for (let x=0; x<N; x++) { const g = new THREE.Group(); groups[z*N+x] = g; cityRoot.add(g); }
+const groups = new Map();
+function groupAt(x,z) {
+  const k = key(x,z); let g = groups.get(k);
+  if (!g) { g = new THREE.Group(); groups.set(k, g); cityRoot.add(g); }
+  return g;
+}
+const sprouting = new Set();   // celdas nuevas que "brotan" al expandirse el mapa
 
 function mesh(g, geo, mat, sx,sy,sz, px,py,pz, cast=true) {
   const m = new THREE.Mesh(geo, mat);
@@ -238,7 +294,7 @@ function lamp(g, px, pz, ax, az) {
 
 /* ---------- construcción procedural de cada celda ---------- */
 function buildCell(x, z) {
-  const g = groups[z*N+x]; g.clear();
+  const g = groupAt(x,z); g.clear();
   const k = cls(x,z), cx = wx(x), cz = wx(z);
   if (k === 'b') buildBuilding(g, x, z, cx, cz);
   else if (k === 'p') buildPark(g, x, z, cx, cz);
@@ -398,10 +454,49 @@ function buildMeadow(g, x, z, cx, cz) {
   else if (r < .15) flowers(g, cx, cz, x*3+z);
 }
 
-function rebuildAll() { computeClasses(); for (let z=0; z<N; z++) for (let x=0; x<N; x++) buildCell(x,z); }
+function rebuildAll() {
+  computeClasses();
+  for (const [k, g] of groups) {   // quitar lo que quedó fuera del mapa (p. ej. al deshacer)
+    const x = Math.floor(k / 4096) - 2048, z = (k % 4096) - 2048;
+    if (!inb(x,z)) { cityRoot.remove(g); groups.delete(k); }
+  }
+  for (let z=B.z0; z<=B.z1; z++) for (let x=B.x0; x<=B.x1; x++) buildCell(x,z);
+}
 function rebuildAround(x0, z0) {
   computeClasses();
   for (let z=z0-3; z<=z0+3; z++) for (let x=x0-3; x<=x0+3; x++) if (inb(x,z)) buildCell(x,z);
+}
+
+// Si se construye cerca del borde, el mapa crece hacia ese lado.
+function maybeExpand(x, z) {
+  const old = { ...B };
+  const sx = () => B.x1 - B.x0 + 1, sz = () => B.z1 - B.z0 + 1;
+  if (x - B.x0 < EDGE && sx() < MAXSPAN) B.x0 -= GROW;
+  if (B.x1 - x < EDGE && sx() < MAXSPAN) B.x1 += GROW;
+  if (z - B.z0 < EDGE && sz() < MAXSPAN) B.z0 -= GROW;
+  if (B.z1 - z < EDGE && sz() < MAXSPAN) B.z1 += GROW;
+  if (old.x0 === B.x0 && old.x1 === B.x1 && old.z0 === B.z0 && old.z1 === B.z1) return false;
+  computeClasses();
+  for (let zz=B.z0; zz<=B.z1; zz++) for (let xx=B.x0; xx<=B.x1; xx++) {
+    const isNew = xx < old.x0 || xx > old.x1 || zz < old.z0 || zz > old.z1;
+    if (!isNew) continue;
+    buildCell(xx, zz);
+    const g = groupAt(xx, zz);
+    g.scale.set(1, .01, 1);
+    g.userData.delay = Math.hypot(xx - x, zz - z) * .04;
+    sprouting.add(g);
+  }
+  fitWorld();
+  setTimeout(() => note(7, true), 120);
+  setTimeout(() => note(9, true), 260);
+  return true;
+}
+function stepSprouts(dt) {
+  for (const g of sprouting) {
+    if (g.userData.delay > 0) { g.userData.delay -= dt; continue; }
+    g.scale.y = Math.min(1, g.scale.y + dt*2.5);
+    if (g.scale.y >= 1) sprouting.delete(g);
+  }
 }
 
 /* ---------- autos, pájaros, nubes ---------- */
@@ -469,16 +564,32 @@ for (let i=0; i<7; i++) {
 }
 
 /* ---------- guardar / deshacer ---------- */
-const serialize = () => JSON.stringify(cells.map(c => [c.f.map(f => [f.c, f.s]), c.park ? 1 : 0]));
+// formato v2: { v:2, b:[x0,x1,z0,z1], c:[[x, z, [[color, estilo]...], parque]...] } — solo celdas con algo
+function serialize() {
+  const c = [];
+  for (const [k, v] of cells) if (v.f.length || v.park)
+    c.push([Math.floor(k / 4096) - 2048, (k % 4096) - 2048, v.f.map(f => [f.c, f.s]), v.park ? 1 : 0]);
+  return JSON.stringify({ v:2, b:[B.x0, B.x1, B.z0, B.z1], c });
+}
 function deserialize(s) {
-  const a = JSON.parse(s);
-  cells = a.map(([f,p]) => ({ f:f.map(([c,st]) => ({ c, s:st })), park:!!p }));
+  const d = JSON.parse(s);
+  cells = new Map();
+  if (Array.isArray(d)) { // formato v1: grilla fija de 20×20
+    B = { ...START };
+    d.forEach(([f,p], i) => { if (f.length || p) cells.set(key(i % 20 - 10, Math.floor(i / 20) - 10), { f:f.map(([c,st]) => ({ c, s:st })), park:!!p }); });
+    return;
+  }
+  B = { x0:d.b[0], x1:d.b[1], z0:d.b[2], z1:d.b[3] };
+  for (const [x, z, f, p] of d.c) cells.set(key(x,z), { f:f.map(([c,st]) => ({ c, s:st })), park:!!p });
 }
 const hist = [];
-function save() { try { localStorage.setItem('barrio-v1', serialize()); } catch(e) {} }
+function save() { try { localStorage.setItem('barrio-v2', serialize()); } catch(e) {} }
 function load() {
-  try { const s = localStorage.getItem('barrio-v1'); if (s) { deserialize(s); if (cells.length === N*N) return; } } catch(e) {}
-  cells = newCells();
+  try {
+    const s = localStorage.getItem('barrio-v2') || localStorage.getItem('barrio-v1');
+    if (s) { deserialize(s); return; }
+  } catch(e) {}
+  cells = new Map(); B = { ...START };
 }
 
 /* ---------- sonido ---------- */
@@ -524,7 +635,7 @@ function plan(hit, erase) {
     else if (n.y < -.5) return null;
     else { x = u.x + Math.round(n.x); z = u.z + Math.round(n.z); }
   } else if (u.park) { x = u.x; z = u.z; }
-  else { x = Math.floor((hit.point.x + HALF)/CELL); z = Math.floor((hit.point.z + HALF)/CELL); }
+  else { x = Math.floor(hit.point.x / CELL); z = Math.floor(hit.point.z / CELL); }
   if (!inb(x,z)) return null;
   const c = cell(x,z);
   if (tool === 'parque') return (c.f.length || c.park) ? null : { op:'park', x, z };
@@ -548,13 +659,16 @@ const hint = document.getElementById('hint');
 function apply(op) {
   if (!op) return;
   hist.push(serialize()); if (hist.length > 80) hist.shift();
-  const c = cell(op.x, op.z);
+  const c = cellW(op.x, op.z);
   if (op.op === 'add') { c.park = false; c.f.push({ c:color, s: tool === 'ofi' ? 'ofi' : 'casa' }); note(c.f.length-1); }
   else if (op.op === 'park') { c.park = true; note(4, true); }
   else if (op.op === 'del') { c.f.splice(op.i, 1); note(0, true); }
   else if (op.op === 'unpark') { c.park = false; note(0, true); }
   else if (op.op === 'paint') { c.f[op.i].c = color; note(op.i+2); }
-  save(); rebuildAround(op.x, op.z);
+  tidy(op.x, op.z);
+  rebuildAround(op.x, op.z);
+  if (op.op === 'add' || op.op === 'park') maybeExpand(op.x, op.z);
+  save();
   hint.classList.add('gone');
 }
 
@@ -584,7 +698,7 @@ PALETTE.forEach((c,i) => {
 const skyBtn = document.getElementById('sky');
 function cycleSky() { skyIdx = (skyIdx+1) % PRESETS.length; const p = PRESETS[skyIdx]; skyBtn.innerHTML = `${p.icon}<span>${p.name}</span>`; }
 skyBtn.addEventListener('click', cycleSky);
-function undo() { if (!hist.length) return; deserialize(hist.pop()); save(); rebuildAll(); note(1, true); }
+function undo() { if (!hist.length) return; deserialize(hist.pop()); save(); rebuildAll(); fitWorld(); note(1, true); }
 document.getElementById('undo').addEventListener('click', undo);
 const muteBtn = document.getElementById('mute');
 muteBtn.addEventListener('click', () => { muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔈'; });
@@ -603,7 +717,8 @@ document.getElementById('photo').addEventListener('click', async () => {
 });
 document.getElementById('reset').addEventListener('click', () => {
   if (!confirm('¿Empezar una ciudad nueva? (podés deshacer)')) return;
-  hist.push(serialize()); cells = newCells(); save(); rebuildAll();
+  hist.push(serialize()); cells = new Map(); B = { ...START }; save(); rebuildAll(); fitWorld();
+  const c = center(); controls.target.set(c.x, 2, c.z);
 });
 addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
@@ -618,20 +733,26 @@ addEventListener('resize', () => {
 /* ---------- arranque y bucle ---------- */
 load();
 rebuildAll();
-if (cells.some(c => c.f.length)) hint.classList.add('gone');
+snapIsland();
+{ const c = center(); controls.target.set(c.x, 2, c.z); camera.position.set(c.x + 42, 36, c.z + 42); }
+if (cells.size) hint.classList.add('gone');
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), .05), t = clock.elapsedTime;
   stepEnv(dt);
+  stepIsland(dt);
+  stepSprouts(dt);
   updateCars(dt);
+  const ctr = center(), grow = Math.max(1, span() / 20);
   for (const b of birds) {
     const u = b.userData; u.a += u.sp*dt;
-    b.position.set(Math.cos(u.a)*u.rad, u.y + Math.sin(u.a*3)*.8, Math.sin(u.a)*u.rad);
+    b.position.set(ctr.x + Math.cos(u.a)*u.rad*grow, u.y + Math.sin(u.a*3)*.8, ctr.z + Math.sin(u.a)*u.rad*grow);
     b.rotation.y = -u.a + (u.sp > 0 ? 0 : Math.PI);
     const f = Math.sin(t*9 + u.ph)*.5; u.l.rotation.z = f; u.r.rotation.z = -f;
   }
-  for (const c of clouds) { c.position.x += dt*.8; if (c.position.x > 80) c.position.x = -80; }
+  const cr = 80 * grow;
+  for (const c of clouds) { c.position.x += dt*.8; if (c.position.x > ctr.x + cr) c.position.x = ctr.x - cr; }
   water.position.y = -.4 + Math.sin(t*.6)*.03;
   controls.update();
   renderer.render(scene, camera);
