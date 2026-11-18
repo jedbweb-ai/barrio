@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Barrio</title>
+<!--HEAD-->
+<style>
+<!--FONTS-->
+  :root{
+    --panel: rgba(255,255,255,.78);
+    --ink: #2d3340;
+    --muted: #6b7280;
+    --accent: #2d3340;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){ --panel: rgba(30,34,46,.78); --ink:#eef0f5; --muted:#a3a9b8; --accent:#eef0f5; }
+  }
+  :root[data-theme="dark"]{ --panel: rgba(30,34,46,.78); --ink:#eef0f5; --muted:#a3a9b8; --accent:#eef0f5; }
+  html,body{margin:0;height:100%;overflow:hidden;background:#bfe3f0;font-family:Nunito,system-ui,sans-serif;color:var(--ink);user-select:none;-webkit-user-select:none}
+  canvas{display:block;touch-action:none}
+  #title{position:fixed;top:14px;left:18px;font-weight:800;font-size:22px;letter-spacing:.5px;color:var(--ink);background:var(--panel);backdrop-filter:blur(10px);padding:6px 14px;border-radius:14px;pointer-events:none}
+  #title small{display:block;font-weight:600;font-size:12px;opacity:.85;letter-spacing:.3px}
+  #hint{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--panel);backdrop-filter:blur(10px);padding:8px 16px;border-radius:999px;font-size:13px;color:var(--ink);transition:opacity 1.2s;pointer-events:none;white-space:nowrap}
+  #hint.gone{opacity:0}
+  #bar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:10px;align-items:center;background:var(--panel);backdrop-filter:blur(12px);padding:8px 10px;border-radius:22px;box-shadow:0 8px 30px rgba(0,0,0,.12);max-width:calc(100vw - 32px);flex-wrap:wrap;justify-content:center}
+  .group{display:flex;gap:4px;align-items:center}
+  .sep{width:1px;height:28px;background:rgba(120,120,140,.25)}
+  button{font:inherit;border:0;background:transparent;color:var(--ink);padding:7px 10px;border-radius:14px;cursor:pointer;display:flex;align-items:center;gap:6px;font-size:14px;transition:background .15s, transform .15s}
+  button:hover{background:rgba(120,130,150,.14)}
+  button.on{background:var(--accent);color:var(--panel)}
+  button.on span{color:inherit}
+  button span{font-size:12.5px;font-weight:600}
+  .sw{width:24px;height:24px;border-radius:50%;padding:0;border:2px solid rgba(255,255,255,.9);box-shadow:0 1px 4px rgba(0,0,0,.18)}
+  .sw.on{outline:2.5px solid var(--accent);outline-offset:2px;background-clip:padding-box}
+  .sw:hover{transform:scale(1.12)}
+  @media (max-width:820px){ button span{display:none} #hint{font-size:12px;white-space:normal;width:80vw;text-align:center;border-radius:14px} #title{font-size:18px} }
+</style>
+</head>
+<body>
+<div id="title">Barrio<small>una ciudad sin apuro</small></div>
+<div id="hint">Clic para construir · clic derecho para quitar · arrastrá para girar · rueda para acercar</div>
+<div id="bar">
+  <div class="group" id="tools">
+    <button data-tool="casa" class="on" title="Viviendas (1)">🏠<span>Viviendas</span></button>
+    <button data-tool="ofi" title="Oficinas (2)">🏢<span>Oficinas</span></button>
+    <button data-tool="parque" title="Parque (3)">🌳<span>Parque</span></button>
+    <button data-tool="pincel" title="Pintar (4)">🖌️<span>Pintar</span></button>
+    <button data-tool="borrar" title="Quitar (5)">🧽<span>Quitar</span></button>
+  </div>
+  <div class="sep"></div>
+  <div class="group" id="colors"></div>
+  <div class="sep"></div>
+  <div class="group">
+    <button id="sky" title="Momento del día (N)">☀️<span>Día</span></button>
+    <button id="undo" title="Deshacer (Ctrl+Z)">↶<span>Deshacer</span></button>
+    <button id="mute" title="Sonido">🔈</button>
+    <button id="photo" title="Guardar foto">📷</button>
+    <button id="reset" title="Ciudad nueva">✦<span>Nueva</span></button>
+  </div>
+</div>
+
+<!--GAME-->
+</body>
+</html>
