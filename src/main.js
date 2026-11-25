@@ -994,22 +994,156 @@ function load() {
 }
 
 /* ---------- sonido ---------- */
-let AC = null;
-function note(i, soft) {
-  if (muted) return;
-  try {
-    AC = AC || new (window.AudioContext || window.webkitAudioContext)();
-    const sc = [0,2,4,7,9], semi = sc[i%5] + 12*Math.floor(i/5);
-    const f = (soft ? 196 : 294) * Math.pow(2, Math.min(semi, 26)/12), t = AC.currentTime;
-    const o = AC.createOscillator(), o2 = AC.createOscillator(), gn = AC.createGain();
-    o.type = 'triangle'; o.frequency.value = f; o2.type = 'sine'; o2.frequency.value = f*2;
-    gn.gain.setValueAtTime(.0001, t);
-    gn.gain.exponentialRampToValueAtTime(soft ? .05 : .1, t+.01);
-    gn.gain.exponentialRampToValueAtTime(.0001, t+.9);
-    o.connect(gn); o2.connect(gn); gn.connect(AC.destination);
-    o.start(t); o2.start(t); o.stop(t+1); o2.stop(t+1);
-  } catch(e) {}
+// Todo suena en La menor pentatónica (La, Do, Re, Mi, Sol).
+// De fondo, una guitarra acústica arpegia Am – F – C – G: las cinco notas de la escala
+// son parte de esos acordes o los adornan bien, así que cualquier nota que toque el jugador suena afinada.
+// Cada tipo de bloque tiene su instrumento; en los edificios, cuanto más alto el piso, más aguda la nota.
+let AC = null, master, musicBus, sfxBus;
+let audioMode = 0;                       // 0 música y sonidos · 1 solo sonidos · 2 silencio
+try { audioMode = +(localStorage.getItem('barrio-audio') || 0) % 3; } catch(e) {}
+const PENTA = [0,3,5,7,10];
+const midiHz = n => 440 * Math.pow(2, (n - 69) / 12);
+const pentaMidi = (base, step) => base + PENTA[((step % 5) + 5) % 5] + 12 * Math.max(0, Math.min(2, Math.floor(step / 5)));
+
+function initAudio() {
+  if (AC) return true;
+  try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return false; }
+  const comp = AC.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 3;
+  master = AC.createGain(); master.gain.value = .9; master.connect(comp); comp.connect(AC.destination);
+  // reverberación suave, generada (sala chica)
+  const len = Math.floor(AC.sampleRate * 2.2), ir = AC.createBuffer(2, len, AC.sampleRate);
+  for (let ch=0; ch<2; ch++) { const d = ir.getChannelData(ch); for (let i=0; i<len; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 2.6); }
+  const rev = AC.createConvolver(); rev.buffer = ir;
+  const wet = AC.createGain(); wet.gain.value = .2; rev.connect(wet); wet.connect(master);
+  sfxBus = AC.createGain(); sfxBus.gain.value = .55; sfxBus.connect(master); sfxBus.connect(rev);
+  // la guitarra pasa por un "cuerpo": realce de graves y recorte de agudos
+  musicBus = AC.createGain(); musicBus.gain.value = audioMode === 0 ? .5 : 0;
+  const body = AC.createBiquadFilter(); body.type = 'peaking'; body.frequency.value = 190; body.Q.value = 1.1; body.gain.value = 4;
+  const air = AC.createBiquadFilter(); air.type = 'lowpass'; air.frequency.value = 5200;
+  musicBus.connect(body); body.connect(air); air.connect(master); air.connect(rev);
+  nextBeat = AC.currentTime + .5;
+  setInterval(scheduler, 90);
+  return true;
 }
+
+// Cuerda pulsada (Karplus-Strong): una ráfaga de ruido que recircula y se va apagando, como una cuerda real.
+const pluckCache = new Map();
+function pluckBuf(midi) {
+  let p = pluckCache.get(midi);
+  if (p) return p;
+  const sr = AC.sampleRate, f = midiHz(midi), N = Math.max(2, Math.round(sr / f)), len = Math.floor(sr * 3.2);
+  const out = new Float32Array(len), raw = new Float32Array(N), line = new Float32Array(N);
+  let prev = 0;
+  for (let i=0; i<N; i++) { prev = prev*.55 + (Math.random()*2-1)*.45; raw[i] = prev; }       // ataque suave, de yema
+  const pp = Math.max(1, Math.floor(N * .18));                                                 // punto donde se pulsa la cuerda
+  for (let i=0; i<N; i++) line[i] = raw[i] - .6 * raw[(i + N - pp) % N];
+  let idx = 0, peak = 0;
+  for (let i=0; i<len; i++) {
+    const nx = (idx + 1) % N, y = line[idx];
+    out[i] = y; if (Math.abs(y) > peak) peak = Math.abs(y);
+    line[idx] = .9975 * .5 * (y + line[nx]);
+    idx = nx;
+  }
+  const fade = Math.floor(sr * .25), k = .9 / (peak || 1);
+  for (let i=0; i<len; i++) out[i] *= k * (i > len - fade ? (len - i) / fade : 1);
+  const buf = AC.createBuffer(1, len, sr); buf.getChannelData(0).set(out);
+  p = { buf, rate: f * (N - .5) / sr };                                                        // corrige la afinación
+  pluckCache.set(midi, p);
+  return p;
+}
+function playPluck(midi, t, vel, bus, ring) {
+  const p = pluckBuf(midi), src = AC.createBufferSource(), g = AC.createGain();
+  src.buffer = p.buf; src.playbackRate.value = p.rate;
+  g.gain.setValueAtTime(vel, t);
+  g.gain.setTargetAtTime(0, t + ring, .12);                                                    // se apaga al cambiar de acorde
+  src.connect(g); g.connect(bus);
+  src.start(t); src.stop(t + ring + .8);
+}
+
+// Guitarra de fondo: arpegio en corcheas, un compás por acorde.
+const STEP = 60 / 72 / 2;
+const CHORDS = [
+  { bass:45, alt:52, up:[57,60,64] },   // La menor: La2 (Mi3) · La3 Do4 Mi4
+  { bass:41, alt:48, up:[57,60,65] },   // Fa:       Fa2 (Do3) · La3 Do4 Fa4
+  { bass:48, alt:55, up:[55,60,64] },   // Do:       Do3 (Sol3) · Sol3 Do4 Mi4
+  { bass:43, alt:50, up:[55,59,62] },   // Sol:      Sol2 (Re3) · Sol3 Si3 Re4
+];
+const PATS = [[-1,0,1,2,1,0,1,0], [-1,1,2,1,-2,1,2,1]];   // -1 bajo · -2 bajo alterno · 0-2 cuerdas agudas
+let nextBeat = 0, stepN = 0;
+function scheduler() {
+  if (!AC || AC.state !== 'running' || audioMode !== 0) return;
+  if (nextBeat < AC.currentTime) nextBeat = AC.currentTime + .08;
+  while (nextBeat < AC.currentTime + .35) {
+    const bar = Math.floor(stepN / 8), s = stepN % 8, ch = CHORDS[bar % 4], pat = PATS[Math.floor(bar / 4) % 2];
+    const p = pat[s], midi = p === -1 ? ch.bass : p === -2 ? ch.alt : ch.up[p];
+    const t = nextBeat + (Math.random() - .5) * .016 + (s % 2 ? .018 : 0);                     // toque humano
+    const vel = (p < 0 ? .9 : .55) * (s % 2 ? .8 : 1) * (.85 + Math.random() * .3);
+    playPluck(midi, Math.max(t, AC.currentTime), vel, musicBus, STEP * 9);
+    if (s === 0 && bar % 4 === 0 && bar > 0)                                                   // rasgueo suave al volver a La menor
+      ch.up.forEach((n, i) => playPluck(n, nextBeat + .03 + i * .028, .28, musicBus, STEP * 8));
+    stepN++; nextBeat += STEP;
+  }
+}
+
+// Un sonido sintetizado: nota principal + armónicos, con su forma de ataque y caída.
+function tone(o) {
+  const g = AC.createGain(), hold = o.hold || 0, end = o.t + o.a + hold + o.d;
+  g.gain.setValueAtTime(.0001, o.t);
+  g.gain.linearRampToValueAtTime(o.g, o.t + o.a);
+  if (hold) g.gain.setValueAtTime(o.g, o.t + o.a + hold);
+  g.gain.exponentialRampToValueAtTime(.0001, end);
+  g.connect(sfxBus);
+  const mk = (f, type, lvl, dec) => {
+    const os = AC.createOscillator(); os.type = type; os.frequency.setValueAtTime(f, o.t);
+    let dest = g;
+    if (lvl !== 1) { const pg = AC.createGain(); pg.gain.setValueAtTime(lvl, o.t); if (dec) pg.gain.exponentialRampToValueAtTime(.0001, o.t + dec); pg.connect(g); dest = pg; }
+    os.connect(dest); os.start(o.t); os.stop(end + .05);
+    return os;
+  };
+  const main = mk(o.f, o.type || 'sine', 1);
+  for (const [r, l, dec] of o.over || []) mk(o.f * r, 'sine', l, dec);
+  if (o.glide) main.frequency.exponentialRampToValueAtTime(o.f * o.glide, end);
+  if (o.vib) { const l = AC.createOscillator(), lg = AC.createGain(); l.frequency.value = 5.2; lg.gain.value = o.f * .006; l.connect(lg); lg.connect(main.frequency); l.start(o.t + .08); l.stop(end); }
+  if (o.fm) { const mo = AC.createOscillator(), mg = AC.createGain(); mo.frequency.value = o.f * o.fm[0]; mg.gain.setValueAtTime(o.f * o.fm[1], o.t); mg.gain.exponentialRampToValueAtTime(o.f * .05, o.t + .5); mo.connect(mg); mg.connect(main.frequency); mo.start(o.t); mo.stop(end + .05); }
+}
+// Un instrumento por tipo de bloque, todos en La menor pentatónica.
+function voice(kind, step, t, vel) {
+  if (kind === 'viv')         tone({ t, f:midiHz(pentaMidi(57, step)), a:.004, d:1.2, g:.45*vel, over:[[2,.25,.5],[5.4,.1,.07]] });                    // kalimba
+  else if (kind === 'neg')    tone({ t, f:midiHz(pentaMidi(69, step)), a:.002, d:1.4, g:.28*vel, over:[[2.76,.3,.6],[5.4,.15,.2],[8.9,.06,.08]] });    // campanita
+  else if (kind === 'ofi')    tone({ t, f:midiHz(pentaMidi(57, step)), a:.005, d:1.5, g:.38*vel, fm:[1,1.6], over:[[14,.04,.06]] });                   // piano eléctrico
+  else if (kind === 'parque') tone({ t, f:midiHz(pentaMidi(69, step)), a:.07, hold:.22, d:.5, g:.26*vel, over:[[2,.12],[3,.04]], vib:true });          // flauta
+  else if (kind === 'camino') playPluck(pentaMidi(45, step), t, .8*vel, sfxBus, .45);                                                                  // cuerda grave apagada
+  else if (kind === 'pincel') tone({ t, f:midiHz(pentaMidi(81, step)), a:.002, d:.18, g:.16*vel });                                                    // toque agudo
+  else if (kind === 'borrar') tone({ t, f:midiHz(pentaMidi(57, 2)), type:'triangle', a:.004, d:.28, g:.2*vel, glide:.66 });                            // nota que cae
+  else                        tone({ t, f:midiHz(pentaMidi(57, step)), a:.004, d:1.0, g:.22*vel, over:[[2,.2,.4]] });                                  // kalimba suave
+}
+// parque y camino no tienen altura: su melodía va paseando por la escala
+const walk = { parque:5, camino:2 };
+function stepWalk(kind) {
+  const moves = [-2,-1,1,2];
+  walk[kind] = Math.max(0, Math.min(9, walk[kind] + moves[Math.floor(Math.random()*4)]));
+  return walk[kind];
+}
+// n > 1 (pincel grande): pequeño arpegio ascendente
+function sfx(kind, step = 0, n = 1) {
+  if (audioMode === 2 || !initAudio()) return;
+  if (AC.state === 'suspended') AC.resume();
+  const t0 = AC.currentTime + .005, count = Math.min(3, n);
+  for (let k=0; k<count; k++) voice(kind, step + k*2, t0 + k*.085, k ? .75 : 1);
+}
+function note(i, soft) { sfx(soft ? 'soft' : 'viv', i); }
+function setAudioMode(mode) {
+  audioMode = mode;
+  try { localStorage.setItem('barrio-audio', mode); } catch(e) {}
+  if (mode !== 2 && initAudio() && AC.state === 'suspended') AC.resume();
+  if (AC) musicBus.gain.setTargetAtTime(mode === 0 ? .5 : 0, AC.currentTime, .25);
+}
+// el navegador solo deja sonar después del primer toque
+const kickAudio = () => { if (audioMode !== 2 && initAudio() && AC.state === 'suspended') AC.resume(); };
+addEventListener('pointerdown', kickAudio, { once:true });
+addEventListener('keydown', kickAudio, { once:true });
+document.addEventListener('visibilitychange', () => { if (AC) document.hidden ? AC.suspend() : (audioMode !== 2 && AC.resume()); });
+window.__barrioAudio = () => ({ state: AC && AC.state, stepN, mode: audioMode });
 
 /* ---------- interacción ---------- */
 const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
@@ -1109,8 +1243,11 @@ function apply(op) {
     tidy(o.x, o.z);
   }
   const kind = ops[0].op;
-  if (kind === 'add') note(top); else if (kind === 'park') note(4, true); else if (kind === 'road') note(2, true);
-  else if (kind === 'paint') note(op.i + 2); else note(0, true);
+  if (kind === 'add') sfx(tool, top, ops.length);
+  else if (kind === 'park') sfx('parque', stepWalk('parque'), ops.length);
+  else if (kind === 'road') sfx('camino', stepWalk('camino'), ops.length);
+  else if (kind === 'paint') sfx('pincel', op.i, ops.length);
+  else sfx('borrar');
   // se redibuja la zona tocada y, enteros, los conjuntos de edificios que cambiaron
   computeClasses();
   const xs = ops.map(o => o.x), zs = ops.map(o => o.z);
@@ -1162,7 +1299,10 @@ skyBtn.addEventListener('click', cycleSky);
 function undo() { if (!hist.length) return; deserialize(hist.pop()); save(); rebuildAll(); fitWorld(); note(1, true); }
 document.getElementById('undo').addEventListener('click', undo);
 const muteBtn = document.getElementById('mute');
-muteBtn.addEventListener('click', () => { muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔈'; });
+const AUDIO_UI = [['🎵','Música y sonidos'], ['🔈','Solo sonidos'], ['🔇','Silencio']];
+function showAudioMode() { muteBtn.textContent = AUDIO_UI[audioMode][0]; muteBtn.title = 'Sonido: ' + AUDIO_UI[audioMode][1]; }
+muteBtn.addEventListener('click', () => { setAudioMode((audioMode + 1) % 3); showAudioMode(); });
+showAudioMode();
 document.getElementById('photo').addEventListener('click', async () => {
   ghost.visible = false; renderer.render(scene, camera);
   const url = renderer.domElement.toDataURL('image/png');

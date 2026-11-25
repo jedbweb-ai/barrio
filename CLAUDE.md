@@ -42,7 +42,11 @@ Juego cozy para construir una ciudad moderna que se arma sola, inspirado en la m
   Los autos respetan el sentido de cada carril y giran en las rotondas (`pickNext`, `isIsland`, `isWide`).
 - **Parques combinados:** senderos conectados, cerco, entradas, elemento central donde se juntan 4 celdas
   (fuente, cantero, juegos, glorieta, árbol grande) y lago con islote desde 3×3.
-- **Ambiente:** autos, pájaros, nubes, ciclo día / atardecer / noche, notas musicales al construir.
+- **Ambiente:** autos, pájaros, nubes, ciclo día / atardecer / noche.
+- **Música:** todo en La menor pentatónica (La Do Re Mi Sol). De fondo, guitarra acústica sintetizada (Karplus-Strong,
+  sin archivos de audio) que arpegia Am – F – C – G a 72 bpm. Cada bloque tiene su instrumento: viviendas kalimba,
+  negocios campanita, oficinas piano eléctrico, parque flauta, camino cuerda grave; en edificios, más alto = más agudo.
+  Pincel grande = arpegio. El botón de sonido alterna música y sonidos / solo sonidos / silencio (se recuerda).
 - **Guardado:** automático en `localStorage` (`barrio-v2`, migra `barrio-v1` y el estilo viejo `casa` → `neg`). Deshacer y foto.
 
 ## Datos técnicos útiles
