@@ -16,7 +16,7 @@ const TREEC = ['#6aa84f','#7cb342','#5a9a4a','#8fbf5f'];
 const CARC = ['#e63946','#f1faee','#457b9d','#1d3557','#f4a261','#2a9d8f','#ffb703','#8d99ae'];
 const hash = (x,z,k=0) => { const s = Math.sin(x*127.1 + z*311.7 + k*74.7) * 43758.5453; return s - Math.floor(s); };
 
-let tool = 'viv', color = PALETTE[0], muted = false;
+let tool = 'viv', color = PALETTE[0], muted = false, brush = 1;   // brush: lado del pincel (1, 2 o 3 celdas)
 
 /* ---------- escena ---------- */
 const renderer = new THREE.WebGLRenderer({ antialias:true, preserveDrawingBuffer:true });
@@ -1027,6 +1027,10 @@ function plan(hit, erase) {
     if (u.floor !== undefined) return { op:'del', x:u.x, z:u.z, i:u.floor };
     if (u.park) return { op:'unpark', x:u.x, z:u.z };
     if (u.street && cell(u.x, u.z).road) return { op:'unroad', x:u.x, z:u.z };
+    if (brush > 1) {
+      const x = u.x !== undefined ? u.x : Math.floor(hit.point.x / CELL), z = u.z !== undefined ? u.z : Math.floor(hit.point.z / CELL);
+      if (brushCells(x, z).some(([a,b]) => { const c = cell(a,b); return c.f.length || c.park || c.road; })) return { op:'sweep', x, z };
+    }
     return null;
   }
   if (tool === 'pincel') return u.floor !== undefined ? { op:'paint', x:u.x, z:u.z, i:u.floor } : null;
@@ -1054,32 +1058,70 @@ function showGhost(op) {
   const cx = wx(op.x), cz = wx(op.z), m = ghost.material;
   if (op.op === 'add') { ghost.scale.set(CELL*1.02, FH*1.02, CELL*1.02); ghost.position.set(cx, H(op.x,op.z)*FH + FH/2, cz); m.color.set(color); }
   else if (op.op === 'park') { ghost.scale.set(CELL, .16, CELL); ghost.position.set(cx, .08, cz); m.color.set('#7cc06a'); }
-  else if (op.op === 'unpark' || op.op === 'unroad') { ghost.scale.set(CELL*1.03, .2, CELL*1.03); ghost.position.set(cx, .1, cz); m.color.set('#ff5a5a'); }
+  else if (op.op === 'unpark' || op.op === 'unroad' || op.op === 'sweep') { ghost.scale.set(CELL*1.03, .2, CELL*1.03); ghost.position.set(cx, .1, cz); m.color.set('#ff5a5a'); }
   else if (op.op === 'road') { ghost.scale.set(CELL, .14, CELL); ghost.position.set(cx, .07, cz); m.color.set('#4a4e57'); }
   else { ghost.scale.set(CELL*1.06, FH*1.06, CELL*1.06); ghost.position.set(cx, op.i*FH + FH/2, cz); m.color.set(op.op === 'del' ? '#ff5a5a' : color); }
+  // el fantasma muestra toda la superficie del pincel
+  ghost.scale.x *= brush; ghost.scale.z *= brush;
+  if (brush === 2) { ghost.position.x += CELL/2; ghost.position.z += CELL/2; }
 }
 
 const hint = document.getElementById('hint');
+// celdas que cubre el pincel: 1×1, 2×2 (4 lugares) o 3×3 (9 lugares)
+function brushCells(x, z) {
+  const o = brush === 1 ? [0] : brush === 2 ? [0,1] : [-1,0,1], out = [];
+  for (const dz of o) for (const dx of o) if (inb(x+dx, z+dz)) out.push([x+dx, z+dz]);
+  return out;
+}
+// convierte una acción en una acción por cada celda del pincel
+function expandOp(op) {
+  const out = [];
+  for (const [x,z] of brushCells(op.x, op.z)) {
+    const c = cell(x,z);
+    if (x === op.x && z === op.z && op.op !== 'sweep') { out.push(op); continue; }
+    if (op.op === 'add') { if (c.f.length < MAXH) out.push({ op:'add', x, z }); }
+    else if (op.op === 'park') { if (!c.f.length && !c.park) out.push({ op:'park', x, z }); }
+    else if (op.op === 'road') { if (!c.f.length && !c.park && !c.road) out.push({ op:'road', x, z }); }
+    else if (op.op === 'paint') { if (c.f.length > op.i) out.push({ op:'paint', x, z, i:op.i }); }
+    else if (c.f.length) out.push({ op:'del', x, z, i:c.f.length-1 });
+    else if (c.park) out.push({ op:'unpark', x, z });
+    else if (c.road) out.push({ op:'unroad', x, z });
+  }
+  return out;
+}
 function apply(op) {
   if (!op) return;
+  const ops = expandOp(op);
+  if (!ops.length) return;
   hist.push(serialize()); if (hist.length > 80) hist.shift();
-  const before = clusterKeysNear(op.x, op.z);
-  const c = cellW(op.x, op.z);
-  if (op.op === 'add') { c.park = false; c.road = false; c.f.push({ c:color, s: tool }); note(c.f.length-1); }
-  else if (op.op === 'park') { c.park = true; c.road = false; note(4, true); }
-  else if (op.op === 'road') { c.road = true; note(2, true); }
-  else if (op.op === 'unroad') { c.road = false; note(0, true); }
-  else if (op.op === 'del') { c.f.splice(op.i, 1); note(0, true); }
-  else if (op.op === 'unpark') { c.park = false; note(0, true); }
-  else if (op.op === 'paint') { c.f[op.i].c = color; note(op.i+2); }
-  tidy(op.x, op.z);
-  rebuildAround(op.x, op.z);
-  // si cambió un conjunto de edificios, se redibuja entero
-  for (const k of new Set([...before, ...clusterKeysNear(op.x, op.z)])) {
-    const kx = Math.floor(k / 4096) - 2048, kz = (k % 4096) - 2048;
-    if (inb(kx, kz) && (Math.abs(kx - op.x) > 3 || Math.abs(kz - op.z) > 3)) buildCell(kx, kz);
+  const touched = new Set();
+  for (const o of ops) for (const k of clusterKeysNear(o.x, o.z)) touched.add(k);
+  let top = 0;
+  for (const o of ops) {
+    const c = cellW(o.x, o.z);
+    if (o.op === 'add') { c.park = false; c.road = false; c.f.push({ c:color, s: tool }); top = Math.max(top, c.f.length-1); }
+    else if (o.op === 'park') { c.park = true; c.road = false; }
+    else if (o.op === 'road') c.road = true;
+    else if (o.op === 'unroad') c.road = false;
+    else if (o.op === 'del') c.f.splice(o.i, 1);
+    else if (o.op === 'unpark') c.park = false;
+    else if (o.op === 'paint') c.f[o.i].c = color;
+    tidy(o.x, o.z);
   }
-  if (op.op === 'add' || op.op === 'park' || op.op === 'road') maybeExpand(op.x, op.z);
+  const kind = ops[0].op;
+  if (kind === 'add') note(top); else if (kind === 'park') note(4, true); else if (kind === 'road') note(2, true);
+  else if (kind === 'paint') note(op.i + 2); else note(0, true);
+  // se redibuja la zona tocada y, enteros, los conjuntos de edificios que cambiaron
+  computeClasses();
+  const xs = ops.map(o => o.x), zs = ops.map(o => o.z);
+  const x0 = Math.min(...xs) - 3, x1 = Math.max(...xs) + 3, z0 = Math.min(...zs) - 3, z1 = Math.max(...zs) + 3;
+  for (let z=z0; z<=z1; z++) for (let x=x0; x<=x1; x++) if (inb(x,z)) buildCell(x,z);
+  for (const o of ops) for (const k of clusterKeysNear(o.x, o.z)) touched.add(k);
+  for (const k of touched) {
+    const kx = Math.floor(k / 4096) - 2048, kz = (k % 4096) - 2048;
+    if (inb(kx, kz) && (kx < x0 || kx > x1 || kz < z0 || kz > z1)) buildCell(kx, kz);
+  }
+  if (kind === 'add' || kind === 'park' || kind === 'road') for (const o of ops) maybeExpand(o.x, o.z);
   save();
   hint.classList.add('gone');
 }
@@ -1107,6 +1149,13 @@ PALETTE.forEach((c,i) => {
   b.addEventListener('click', () => { color = c; [...colorsEl.children].forEach(x => x.classList.toggle('on', x === b)); if (tool === 'parque' || tool === 'camino' || tool === 'borrar') setTool('viv'); });
   colorsEl.appendChild(b);
 });
+const brushBtn = document.getElementById('brush');
+function cycleBrush() {
+  brush = brush % 3 + 1; ghost.visible = false;
+  brushBtn.innerHTML = ['▫️','◽','⬜'][brush-1] + '<span>' + brush + '×' + brush + '</span>';
+  brushBtn.classList.toggle('on', brush > 1);
+}
+brushBtn.addEventListener('click', cycleBrush);
 const skyBtn = document.getElementById('sky');
 function cycleSky() { skyIdx = (skyIdx+1) % PRESETS.length; const p = PRESETS[skyIdx]; skyBtn.innerHTML = `${p.icon}<span>${p.name}</span>`; }
 skyBtn.addEventListener('click', cycleSky);
@@ -1137,6 +1186,7 @@ addEventListener('keydown', e => {
   const t = { '1':'viv', '2':'neg', '3':'ofi', '4':'parque', '5':'camino', '6':'pincel', '7':'borrar' }[e.key];
   if (t) setTool(t);
   if (e.key.toLowerCase() === 'n') cycleSky();
+  if (e.key.toLowerCase() === 'b') cycleBrush();
 });
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight);

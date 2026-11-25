@@ -24,7 +24,9 @@ Juego cozy para construir una ciudad moderna que se arma sola, inspirado en la m
 - Textos de la interfaz y comentarios del código: en español rioplatense.
 
 ## Qué tiene hoy
-- **Herramientas:** Viviendas (`viv`), Negocios (`neg`), Oficinas (`ofi`), Parque, Camino, Pintar, Quitar. 8 colores. Teclas 1–7, N (día), Ctrl+Z.
+- **Herramientas:** Viviendas (`viv`), Negocios (`neg`), Oficinas (`ofi`), Parque, Camino, Pintar, Quitar. 8 colores. Teclas 1–7, N (día), B (tamaño), Ctrl+Z.
+- **Tamaño del pincel:** botón que alterna 1×1, 2×2 (4 lugares) y 3×3 (9 lugares); vale para construir, parque, camino,
+  pintar y quitar (`brush`, `brushCells`, `expandOp`). Un clic = un solo paso de deshacer.
 - **Mapa que crece:** empieza en 20×20; al construir a ≤3 celdas del borde se agregan 6 celdas de ese lado (máx. 90 por lado).
 - **Generación automática:** calles con veredas y sendas peatonales, faroles, locales con toldo en planta baja,
   balcones, terrazas, antenas, pasarelas entre torres, patios internos.
