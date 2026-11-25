@@ -229,8 +229,8 @@ const key = (x,z) => (x + 2048) * 4096 + (z + 2048);
 const inb = (x,z) => x >= B.x0 && x <= B.x1 && z >= B.z0 && z <= B.z1;
 const EMPTY = Object.freeze({ f:Object.freeze([]), park:false });
 const cell = (x,z) => cells.get(key(x,z)) || EMPTY;
-function cellW(x,z) { const k = key(x,z); let c = cells.get(k); if (!c) { c = { f:[], park:false }; cells.set(k, c); } return c; }
-function tidy(x,z) { const c = cells.get(key(x,z)); if (c && !c.f.length && !c.park) cells.delete(key(x,z)); }
+function cellW(x,z) { const k = key(x,z); let c = cells.get(k); if (!c) { c = { f:[], park:false, road:false }; cells.set(k, c); } return c; }
+function tidy(x,z) { const c = cells.get(key(x,z)); if (c && !c.f.length && !c.park && !c.road) cells.delete(key(x,z)); }
 const H = (x,z) => inb(x,z) ? cell(x,z).f.length : 0;
 let CL = new Map(), streetList = [];
 const cls = (x,z) => inb(x,z) ? (CL.get(key(x,z)) || 'm') : 'v';
@@ -277,12 +277,42 @@ function computeClasses() {
       classify(x, z);
     }
   }
+  computeClusters();
+}
+// Edificios vecinos del mismo tipo forman un conjunto; su tamaño cambia el diseño.
+let CLU = new Map();
+function computeClusters() {
+  CLU = new Map();
+  for (const [k0, c0] of cells) {
+    if (!c0.f.length || CLU.has(k0)) continue;
+    const type = c0.f[0].s, members = [], stack = [k0];
+    const cl = { type, members, size:0, tier:1, maxH:0, anchor:k0, seed:0 };
+    CLU.set(k0, cl);
+    while (stack.length) {
+      const k = stack.pop(); members.push(k);
+      const x = Math.floor(k / 4096) - 2048, z = (k % 4096) - 2048, c = cells.get(k);
+      if (c.f.length > cl.maxH || (c.f.length === cl.maxH && k < cl.anchor)) { cl.maxH = c.f.length; cl.anchor = k; }
+      for (const [dx,dz] of DIRS) {
+        const nk = key(x+dx, z+dz), n = cells.get(nk);
+        if (n && n.f.length && n.f[0].s === type && !CLU.has(nk) && inb(x+dx, z+dz)) { CLU.set(nk, cl); stack.push(nk); }
+      }
+    }
+    cl.size = members.length;
+    cl.tier = cl.size >= 8 ? 4 : cl.size >= 4 ? 3 : cl.size >= 2 ? 2 : 1;
+    cl.seed = hash(Math.floor(cl.anchor / 4096) - 2048, (cl.anchor % 4096) - 2048, 7);
+  }
+}
+function clusterKeysNear(x, z) {
+  const s = new Set();
+  for (const [dx,dz] of [[0,0], ...DIRS]) { const cl = CLU.get(key(x+dx, z+dz)); if (cl) for (const k of cl.members) s.add(k); }
+  return s;
 }
 function classify(x, z) {
   {
     const c = cell(x,z); let k;
     if (c.f.length) k = 'b';
     else if (c.park) k = 'p';
+    else if (c.road) k = 's';
     else if (DIRS.every(([dx,dz]) => H(x+dx,z+dz) > 0)) k = 'y';
     else {
       k = 'm';
@@ -348,6 +378,8 @@ function buildBuilding(g, x, z, cx, cz) {
   const c = cell(x,z), h = c.f.length;
   const nbs = DIRS.map(([dx,dz]) => ({ dx, dz, k:cls(x+dx,z+dz), h:H(x+dx,z+dz) }));
   const onStreet = nbs.some(n => n.k === 's');
+  const cl = CLU.get(key(x,z)), T = cl.tier, isAnchor = cl.anchor === key(x,z);
+  const clColor = AWN[Math.floor(cl.seed * AWN.length) % AWN.length];
   for (let i=0; i<h; i++) {
     const fl = c.f[i];
     const st = fl.s === 'viv' ? (i === 0 ? 'vivpb' : 'viv') : (i === 0 && onStreet) ? 'local' : fl.s;
@@ -376,20 +408,38 @@ function buildBuilding(g, x, z, cx, cz) {
       if (st === 'vivpb' && n.k !== 'b') {
         const fx = cx+n.dx*(CELL/2+.1), fz = cz+n.dz*(CELL/2+.1);
         box(g, plain('#cfc8bb'), along?.22:.5, .1, along?.5:.22, fx, .1, fz, false);                  // escalón
-        for (const o of [-.72,.72]) {
+        if (T >= 3) {                                   // conjunto de viviendas: cerco verde al frente
+          for (const o of [-.66,.66]) box(g, plain('#4f8a4a'), along?.2:.62, .28, along?.62:.2, fx+(along?n.dx*.1:o), .2, fz+(along?o:n.dz*.1));
+        } else for (const o of [-.72,.72]) {
           box(g, plain('#8a5a3a'), .2, .18, .2, fx+(along?0:o), .2, fz+(along?o:0), false);
           mesh(g, ICO, plain(TREEC[Math.floor(hash(x,z,o+n.dx)*4)],{flatShading:true}), .17,.2,.17, fx+(along?0:o), .42, fz+(along?o:0), false);
         }
       }
       // toldos en locales que dan a la calle
       if (st === 'local' && n.k === 's') {
-        const ac = AWN[Math.floor(hash(x, z, 40 + n.dx*3 + n.dz)*AWN.length)];
-        box(g, plain(ac), along?.55:1.7, .07, along?1.7:.55, cx+n.dx*(CELL/2+.27), FH*.82, cz+n.dz*(CELL/2+.27));
+        const w = T > 1 ? CELL : 1.7;                   // en conjunto, el toldo es continuo y de un solo color
+        if (cl.type === 'ofi') {                        // oficinas: marquesina plana
+          box(g, plain('#d9dee2'), along?.5:w, .06, along?w:.5, cx+n.dx*(CELL/2+.25), FH*.9, cz+n.dz*(CELL/2+.25));
+        } else {
+          const ac = T > 1 ? clColor : AWN[Math.floor(hash(x, z, 40 + n.dx*3 + n.dz)*AWN.length)];
+          box(g, plain(ac), along?.55:w, .07, along?w:.55, cx+n.dx*(CELL/2+.27), FH*.82, cz+n.dz*(CELL/2+.27));
+        }
+      }
+      // galería comercial: cornisa continua sobre la planta baja
+      if (i === 0 && cl.type === 'neg' && T >= 3) {
+        box(g, plain('#f4f1e8'), along?.12:CELL, .18, along?CELL:.12, cx+n.dx*(CELL/2+.05), FH, cz+n.dz*(CELL/2+.05), false);
       }
       // franjas horizontales en oficinas
       if (st === 'ofi' && i > 0) {
         box(g, plain('#d9dee2'), along?.08:CELL, .07, along?CELL:.08, cx+n.dx*(CELL/2+.03), i*FH, cz+n.dz*(CELL/2+.03), false);
       }
+    }
+  }
+  // complejo de oficinas: columnas en las esquinas libres
+  if (cl.type === 'ofi' && T >= 3) {
+    for (const [dx,dz] of [[1,1],[1,-1],[-1,1],[-1,-1]]) {
+      if (cls(x+dx, z) === 'b' || cls(x, z+dz) === 'b') continue;
+      box(g, plain('#eef1f4'), .18, h*FH + .3, .18, cx+dx*CELL/2, (h*FH + .3)/2, cz+dz*CELL/2);
     }
   }
   // techo: depende del tipo de edificio y de los vecinos iguales pegados
@@ -405,7 +455,8 @@ function buildBuilding(g, x, z, cx, cz) {
   }
   const r = hash(x, z, 99);
   if (pitched) {
-    const rm = plain(ROOFC[(PALETTE.indexOf(top.c) + ROOFC.length) % ROOFC.length], { flatShading:true });
+    // en un conjunto de viviendas todos los techos son del mismo color
+    const rm = plain(T >= 3 ? ROOFC[Math.floor(cl.seed * ROOFC.length) % ROOFC.length] : ROOFC[(PALETTE.indexOf(top.c) + ROOFC.length) % ROOFC.length], { flatShading:true });
     if (!ax && !az) {                      // casa suelta: techo a cuatro aguas
       const rr = (CELL + .3) / Math.SQRT2;
       mesh(g, PYR, rm, rr, .95, rr, cx, y + .475, cz);
@@ -421,6 +472,41 @@ function buildBuilding(g, x, z, cx, cz) {
       }
     }
     if (r < .6) { box(g, plain('#9a5f4a'), .24, .75, .24, cx-.42, y+.5, cz-.42); box(g, plain('#6b6f78'), .3, .06, .3, cx-.42, y+.9, cz-.42); }
+    if (isAnchor && T >= 3) {              // torrecita del conjunto
+      box(g, plain('#f4f1ea'), .5, 1.5, .5, cx+.45, y+.75, cz+.45);
+      box(g, plain('#4d5a6a'), .52, .22, .2, cx+.45, y+1.15, cz+.45, false);
+      box(g, plain('#4d5a6a'), .2, .22, .52, cx+.45, y+1.15, cz+.45, false);
+      mesh(g, PYR, rm, .46, .55, .46, cx+.45, y+1.77, cz+.45);
+    }
+  } else if (isAnchor && T >= 3 && cl.type === 'ofi') {   // complejo de oficinas: corona en la torre más alta
+    box(g, facadeMat('ofi', top.c, 0), 1.5, .7, 1.5, cx, y+.35, cz);
+    box(g, plain('#d9dee2'), 1.62, .08, 1.62, cx, y+.72, cz);
+    box(g, facadeMat('ofi', top.c, 1), 1.0, .6, 1.0, cx, y+1.05, cz);
+    box(g, plain('#d9dee2'), 1.1, .06, 1.1, cx, y+1.37, cz);
+    mesh(g, CYL, plain('#6b6f78'), .04, 2.2, .04, cx, y+2.5, cz);
+    box(g, REDB, .12, .12, .12, cx, y+3.6, cz, false);
+  } else if (isAnchor && T >= 3 && cl.type === 'neg') {   // centro comercial: cartel en alto
+    box(g, plain('#6b6f78'), .16, 1.6, .16, cx, y+.8, cz);
+    box(g, plain(clColor), 1.4, .85, .24, cx, y+1.95, cz);
+    box(g, BULB, 1.05, .16, .28, cx, y+2.08, cz, false);
+    box(g, plain('#f4f1e8'), .7, .1, .28, cx, y+1.75, cz, false);
+  } else if (isAnchor && T >= 3 && cl.type === 'viv') {   // complejo de viviendas: último piso con pileta
+    box(g, plain('#f4f1ea'), .9, .6, .8, cx-.4, y+.3, cz-.4);
+    box(g, plain('#b08a5e'), 1.05, .06, .95, cx-.4, y+.63, cz-.4);
+    box(g, plain('#eef3f5'), .8, .14, .6, cx+.45, y+.08, cz+.5);
+    box(g, plain('#6fc3dc',{roughness:.15}), .65, .04, .45, cx+.45, y+.16, cz+.5, false);
+  } else if (T === 4 && cl.type === 'neg' && r < .45) {   // gran centro comercial: café con sombrillas
+    box(g, plain('#b08a5e'), 1.7, .05, 1.7, cx, y+.03, cz, false);
+    [[-.45,-.4],[.45,.35]].forEach(([ox,oz], i) => {
+      mesh(g, CYL, plain('#f4f1ea'), .2, .04, .2, cx+ox, y+.32, cz+oz);
+      mesh(g, CYL, plain('#6b6f78'), .025, .8, .025, cx+ox, y+.4, cz+oz);
+      mesh(g, CONE, plain(i ? clColor : '#f4f1e8', {flatShading:true}), .45, .2, .45, cx+ox, y+.88, cz+oz);
+    });
+  } else if (T === 4 && cl.type === 'ofi' && r < .35) {   // gran complejo: jardín en altura
+    box(g, plain('#7da35d'), 1.6, .1, 1.6, cx, y+.05, cz);
+    tree(g, cx-.4, cz-.35, .7, y+.1, x);
+    tree(g, cx+.45, cz+.3, .6, y+.1, z);
+    box(g, plain('#9b6b43'), .5, .08, .18, cx+.3, y+.22, cz-.5);
   } else if (block && top.s === 'viv') {   // manzana de viviendas: terraza compartida
     box(g, plain('#b08a5e'), 1.7, .06, 1.7, cx, y+.03, cz, false);
     if (r < .4) {
@@ -487,14 +573,19 @@ function buildBuilding(g, x, z, cx, cz) {
 
 function buildStreet(g, x, z, cx, cz) {
   const s = box(g, plain('#4a4e57',{roughness:.95}), CELL, .04, CELL, cx, .02, cz, false);
-  s.userData.pick = { ground:true };
+  s.userData.pick = { x, z, street:true };
+  const isRoad = cell(x,z).road;
   const isS = (a,b) => cls(a,b) === 's';
   const sw = plain('#d2cdc2');
   const walkSides = [];
   for (const [dx,dz] of DIRS) {
     if (isS(x+dx, z+dz)) continue;
+    const along = dx !== 0, nk = cls(x+dx, z+dz);
+    if (isRoad && (nk === 'm' || nk === 'v')) {         // camino por el campo: banquina, sin vereda
+      box(g, plain('#f4f1e8'), along?.06:CELL, .01, along?CELL:.06, cx+dx*(CELL/2-.1), .045, cz+dz*(CELL/2-.1), false);
+      continue;
+    }
     walkSides.push([dx,dz]);
-    const along = dx !== 0;
     const w = box(g, sw, along?.45:CELL, .12, along?CELL:.45, cx+dx*(CELL/2-.225), .06, cz+dz*(CELL/2-.225), false);
     w.userData.pick = { ground:true };
   }
@@ -505,8 +596,9 @@ function buildStreet(g, x, z, cx, cz) {
   const sd = DIRS.filter(([dx,dz]) => isS(x+dx, z+dz));
   const hor = isS(x+1,z) && isS(x-1,z), ver = isS(x,z+1) && isS(x,z-1);
   const paint = plain('#f4f1e8');
-  if (sd.length === 2 && (hor || ver)) {
-    for (const o of [-.5, .5]) box(g, paint, hor?.5:.08, .01, hor?.08:.5, cx+(hor?o:0), .045, cz+(ver?o:0), false);
+  const lineX = hor || (sd.length === 1 && sd[0][0] !== 0);
+  if ((sd.length === 2 && (hor || ver)) || sd.length === 1) {
+    for (const o of [-.5, .5]) box(g, paint, lineX?.5:.08, .01, lineX?.08:.5, cx+(lineX?o:0), .045, cz+(lineX?0:o), false);
   } else if (sd.length >= 3) {
     for (const [dx,dz] of sd) for (let i=-2; i<=2; i++) {
       const along = dx !== 0;
@@ -784,8 +876,8 @@ for (let i=0; i<7; i++) {
 // formato v2: { v:2, b:[x0,x1,z0,z1], c:[[x, z, [[color, estilo]...], parque]...] } — solo celdas con algo
 function serialize() {
   const c = [];
-  for (const [k, v] of cells) if (v.f.length || v.park)
-    c.push([Math.floor(k / 4096) - 2048, (k % 4096) - 2048, v.f.map(f => [f.c, f.s]), v.park ? 1 : 0]);
+  for (const [k, v] of cells) if (v.f.length || v.park || v.road)
+    c.push([Math.floor(k / 4096) - 2048, (k % 4096) - 2048, v.f.map(f => [f.c, f.s]), v.park ? 1 : v.road ? 2 : 0]);
   return JSON.stringify({ v:2, b:[B.x0, B.x1, B.z0, B.z1], c });
 }
 function deserialize(s) {
@@ -793,11 +885,11 @@ function deserialize(s) {
   cells = new Map();
   if (Array.isArray(d)) { // formato v1: grilla fija de 20×20
     B = { ...START };
-    d.forEach(([f,p], i) => { if (f.length || p) cells.set(key(i % 20 - 10, Math.floor(i / 20) - 10), { f:f.map(([c,st]) => ({ c, s: st === 'casa' ? 'neg' : st })), park:!!p }); });
+    d.forEach(([f,p], i) => { if (f.length || p) cells.set(key(i % 20 - 10, Math.floor(i / 20) - 10), { f:f.map(([c,st]) => ({ c, s: st === 'casa' ? 'neg' : st })), park:p === 1, road:p === 2 }); });
     return;
   }
   B = { x0:d.b[0], x1:d.b[1], z0:d.b[2], z1:d.b[3] };
-  for (const [x, z, f, p] of d.c) cells.set(key(x,z), { f:f.map(([c,st]) => ({ c, s: st === 'casa' ? 'neg' : st })), park:!!p });
+  for (const [x, z, f, p] of d.c) cells.set(key(x,z), { f:f.map(([c,st]) => ({ c, s: st === 'casa' ? 'neg' : st })), park:p === 1, road:p === 2 });
 }
 const hist = [];
 function save() { try { localStorage.setItem('barrio-v2', serialize()); } catch(e) {} }
@@ -842,6 +934,7 @@ function plan(hit, erase) {
   if (erase || tool === 'borrar') {
     if (u.floor !== undefined) return { op:'del', x:u.x, z:u.z, i:u.floor };
     if (u.park) return { op:'unpark', x:u.x, z:u.z };
+    if (u.street && cell(u.x, u.z).road) return { op:'unroad', x:u.x, z:u.z };
     return null;
   }
   if (tool === 'pincel') return u.floor !== undefined ? { op:'paint', x:u.x, z:u.z, i:u.floor } : null;
@@ -851,11 +944,12 @@ function plan(hit, erase) {
     if (n.y > .5) { x = u.x; z = u.z; }
     else if (n.y < -.5) return null;
     else { x = u.x + Math.round(n.x); z = u.z + Math.round(n.z); }
-  } else if (u.park) { x = u.x; z = u.z; }
+  } else if (u.park || u.street) { x = u.x; z = u.z; }
   else { x = Math.floor(hit.point.x / CELL); z = Math.floor(hit.point.z / CELL); }
   if (!inb(x,z)) return null;
   const c = cell(x,z);
   if (tool === 'parque') return (c.f.length || c.park) ? null : { op:'park', x, z };
+  if (tool === 'camino') return (c.f.length || c.park || c.road) ? null : { op:'road', x, z };
   if (c.f.length >= MAXH) return null;
   return { op:'add', x, z };
 }
@@ -868,7 +962,8 @@ function showGhost(op) {
   const cx = wx(op.x), cz = wx(op.z), m = ghost.material;
   if (op.op === 'add') { ghost.scale.set(CELL*1.02, FH*1.02, CELL*1.02); ghost.position.set(cx, H(op.x,op.z)*FH + FH/2, cz); m.color.set(color); }
   else if (op.op === 'park') { ghost.scale.set(CELL, .16, CELL); ghost.position.set(cx, .08, cz); m.color.set('#7cc06a'); }
-  else if (op.op === 'unpark') { ghost.scale.set(CELL*1.03, .2, CELL*1.03); ghost.position.set(cx, .1, cz); m.color.set('#ff5a5a'); }
+  else if (op.op === 'unpark' || op.op === 'unroad') { ghost.scale.set(CELL*1.03, .2, CELL*1.03); ghost.position.set(cx, .1, cz); m.color.set('#ff5a5a'); }
+  else if (op.op === 'road') { ghost.scale.set(CELL, .14, CELL); ghost.position.set(cx, .07, cz); m.color.set('#4a4e57'); }
   else { ghost.scale.set(CELL*1.06, FH*1.06, CELL*1.06); ghost.position.set(cx, op.i*FH + FH/2, cz); m.color.set(op.op === 'del' ? '#ff5a5a' : color); }
 }
 
@@ -876,15 +971,23 @@ const hint = document.getElementById('hint');
 function apply(op) {
   if (!op) return;
   hist.push(serialize()); if (hist.length > 80) hist.shift();
+  const before = clusterKeysNear(op.x, op.z);
   const c = cellW(op.x, op.z);
-  if (op.op === 'add') { c.park = false; c.f.push({ c:color, s: tool }); note(c.f.length-1); }
-  else if (op.op === 'park') { c.park = true; note(4, true); }
+  if (op.op === 'add') { c.park = false; c.road = false; c.f.push({ c:color, s: tool }); note(c.f.length-1); }
+  else if (op.op === 'park') { c.park = true; c.road = false; note(4, true); }
+  else if (op.op === 'road') { c.road = true; note(2, true); }
+  else if (op.op === 'unroad') { c.road = false; note(0, true); }
   else if (op.op === 'del') { c.f.splice(op.i, 1); note(0, true); }
   else if (op.op === 'unpark') { c.park = false; note(0, true); }
   else if (op.op === 'paint') { c.f[op.i].c = color; note(op.i+2); }
   tidy(op.x, op.z);
   rebuildAround(op.x, op.z);
-  if (op.op === 'add' || op.op === 'park') maybeExpand(op.x, op.z);
+  // si cambió un conjunto de edificios, se redibuja entero
+  for (const k of new Set([...before, ...clusterKeysNear(op.x, op.z)])) {
+    const kx = Math.floor(k / 4096) - 2048, kz = (k % 4096) - 2048;
+    if (inb(kx, kz) && (Math.abs(kx - op.x) > 3 || Math.abs(kz - op.z) > 3)) buildCell(kx, kz);
+  }
+  if (op.op === 'add' || op.op === 'park' || op.op === 'road') maybeExpand(op.x, op.z);
   save();
   hint.classList.add('gone');
 }
@@ -909,7 +1012,7 @@ toolBtns.forEach(b => b.addEventListener('click', () => setTool(b.dataset.tool))
 const colorsEl = document.getElementById('colors');
 PALETTE.forEach((c,i) => {
   const b = document.createElement('button'); b.className = 'sw' + (i ? '' : ' on'); b.style.background = c; b.title = 'Color';
-  b.addEventListener('click', () => { color = c; [...colorsEl.children].forEach(x => x.classList.toggle('on', x === b)); if (tool === 'parque' || tool === 'borrar') setTool('viv'); });
+  b.addEventListener('click', () => { color = c; [...colorsEl.children].forEach(x => x.classList.toggle('on', x === b)); if (tool === 'parque' || tool === 'camino' || tool === 'borrar') setTool('viv'); });
   colorsEl.appendChild(b);
 });
 const skyBtn = document.getElementById('sky');
@@ -939,7 +1042,7 @@ document.getElementById('reset').addEventListener('click', () => {
 });
 addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
-  const t = { '1':'viv', '2':'neg', '3':'ofi', '4':'parque', '5':'pincel', '6':'borrar' }[e.key];
+  const t = { '1':'viv', '2':'neg', '3':'ofi', '4':'parque', '5':'camino', '6':'pincel', '7':'borrar' }[e.key];
   if (t) setTool(t);
   if (e.key.toLowerCase() === 'n') cycleSky();
 });
