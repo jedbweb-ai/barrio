@@ -57,5 +57,7 @@ Juego cozy para construir una ciudad moderna que se arma sola, inspirado en la m
 
 ## Pendiente / ideas
 - Probar en un celular real: instalación como app, uso táctil y rendimiento con mapas grandes.
+- Música: el usuario la aprobó de oído ("quedó espectacular", 2026-11-25). Falta probar el audio en celular.
+  Si pide la pentatónica mayor, cambiar `PENTA` y los acordes en la sección de sonido.
 - Verificar el botón Foto para visitantes externos del artifact.
 - Ideas conversadas: peatones, grilla irregular, puentes sobre agua, plazas grandes, estaciones, pasar a Godot.
