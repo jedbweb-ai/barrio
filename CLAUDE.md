@@ -35,6 +35,9 @@ Juego cozy para construir una ciudad moderna que se arma sola, inspirado en la m
   cerco al frente y torrecita o último piso con pileta (viviendas); cornisa y cartel en alto (negocios); columnas en
   esquinas y corona en la torre más alta (oficinas). Desde 8: café con sombrillas (negocios), jardín en altura (oficinas).
 - **Caminos:** la herramienta Camino traza calles sueltas; en el campo van con banquina y sin vereda. Se quitan con Quitar.
+- **Calles combinadas:** 2 carriles pegados = avenida con separador; 3 de ancho = bulevar con cantero arbolado;
+  celda de calle rodeada de calle = isla (rotonda con fuente, monumento o árbol); bloque 2×2 = mini rotonda.
+  Los autos respetan el sentido de cada carril y giran en las rotondas (`pickNext`, `isIsland`, `isWide`).
 - **Parques combinados:** senderos conectados, cerco, entradas, elemento central donde se juntan 4 celdas
   (fuente, cantero, juegos, glorieta, árbol grande) y lago con islote desde 3×3.
 - **Ambiente:** autos, pájaros, nubes, ciclo día / atardecer / noche, notas musicales al construir.

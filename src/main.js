@@ -571,11 +571,82 @@ function buildBuilding(g, x, z, cx, cz) {
   }
 }
 
+const isSt = (x,z) => cls(x,z) === 's';
+// celda de calle totalmente rodeada de calle: ahí va una isla (rotonda o cantero de bulevar)
+function isIsland(x, z) {
+  for (let dz=-1; dz<=1; dz++) for (let dx=-1; dx<=1; dx++) if (!isSt(x+dx, z+dz)) return false;
+  return true;
+}
+// ¿hay un bloque de 2×2 de calle (sin islas) con esta celda en una esquina?
+const quadSt = (x,z,qx,qz) => isSt(x,z) && isSt(x+qx,z) && isSt(x,z+qz) && isSt(x+qx,z+qz)
+  && !isIsland(x,z) && !isIsland(x+qx,z) && !isIsland(x,z+qz) && !isIsland(x+qx,z+qz);
+const isWide = (x,z) => isSt(x,z) && [[1,1],[1,-1],[-1,1],[-1,-1]].some(([qx,qz]) => isSt(x+qx,z) && isSt(x,z+qz) && isSt(x+qx,z+qz));
+
+function buildIsland(g, x, z, cx, cz) {
+  const curb = plain('#d2cdc2'), grass = plain('#86bd6a'), r = hash(x, z, 61);
+  const W = isIsland(x-1,z), E = isIsland(x+1,z), Nn = isIsland(x,z-1), S = isIsland(x,z+1);
+  if (!W && !E && !Nn && !S) {               // rotonda: isla redonda con algo en el centro
+    mesh(g, CYL, curb, .96, .16, .96, cx, .1, cz);
+    mesh(g, CYL, grass, .84, .05, .84, cx, .19, cz, false);
+    if (r < .3) fountain(g, cx, cz, .85);
+    else if (r < .55) {                      // monumento
+      box(g, curb, .5, .3, .5, cx, .35, cz);
+      box(g, plain('#eef1f4'), .2, 1.7, .2, cx, 1.3, cz);
+      mesh(g, PYR, plain('#eef1f4'), .15, .3, .15, cx, 2.3, cz);
+    } else if (r < .8) {                     // árbol grande
+      mesh(g, CYL, plain('#7a5a3c'), .12, 1.0, .12, cx, .7, cz);
+      mesh(g, ICO, plain('#5a9a4a',{flatShading:true}), .85, .75, .85, cx, 1.7, cz);
+      flowers(g, cx+.3, cz+.3, x+z);
+    } else {                                 // cantero con farol
+      for (let i=0; i<8; i++) mesh(g, ICO, plain(['#ff7aa2','#ffd166','#ffffff','#c084fc'][i%4],{flatShading:true}), .1,.1,.1, cx+Math.cos(i*.785)*.5, .27, cz+Math.sin(i*.785)*.5, false);
+      mesh(g, CYL, plain('#3b3f46'), .05, 1.9, .05, cx, 1.1, cz);
+      for (const o of [-.3,.3]) { box(g, plain('#3b3f46'), .34, .04, .05, cx+o/2, 2.02, cz); box(g, BULB, .14, .06, .14, cx+o, 1.97, cz, false); }
+    }
+    return;
+  }
+  // bulevar: cantero central que se une con los vecinos
+  const x0 = W ? -1 : -.72, x1 = E ? 1 : .72, z0 = Nn ? -1 : -.72, z1 = S ? 1 : .72;
+  box(g, curb, x1-x0, .16, z1-z0, cx+(x0+x1)/2, .1, cz+(z0+z1)/2);
+  box(g, grass, x1-x0-(W?0:.1)-(E?0:.1), .05, z1-z0-(Nn?0:.1)-(S?0:.1), cx+(x0+x1)/2+((W?0:.05)-(E?0:.05)), .19, cz+(z0+z1)/2+((Nn?0:.05)-(S?0:.05)), false);
+  if (r < .55) tree(g, cx+(hash(x,z,62)-.5)*.5, cz+(hash(x,z,63)-.5)*.5, 1+hash(x,z,64)*.4, .2, x+z);
+  else if (r < .8) {                         // farol doble
+    const alongX = W || E;
+    mesh(g, CYL, plain('#3b3f46'), .05, 1.9, .05, cx, 1.1, cz);
+    for (const o of [-.4,.4]) { box(g, plain('#3b3f46'), alongX?.05:.4, .04, alongX?.4:.05, cx+(alongX?0:o/2), 2.02, cz+(alongX?o/2:0)); box(g, BULB, .14, .06, .14, cx+(alongX?0:o), 1.97, cz+(alongX?o:0), false); }
+  } else flowers(g, cx, cz, x*2+z);
+}
+
+// donde se juntan cuatro celdas de calle: separador de avenida o mini rotonda
+function streetQuad(g, x, z, cx, cz) {
+  if (!quadSt(x, z, 1, 1)) return;
+  const px = cx + CELL/2, pz = cz + CELL/2, curb = plain('#d2cdc2');
+  const two = (a,b,c,d) => isSt(a,b) && isSt(c,d) && !isIsland(a,b) && !isIsland(c,d);
+  const contX = two(x+2,z, x+2,z+1) || two(x-1,z, x-1,z+1);
+  const contZ = two(x,z+2, x+1,z+2) || two(x,z-1, x+1,z-1);
+  const r = hash(x, z, 66);
+  if (contX === contZ) {                     // cruce o plazoleta: mini rotonda
+    mesh(g, CYL, curb, .46, .16, .46, px, .1, pz);
+    mesh(g, CYL, plain('#86bd6a'), .36, .05, .36, px, .19, pz, false);
+    if (r < .5) mesh(g, ICO, plain('#5f9a4a',{flatShading:true}), .26, .3, .26, px, .42, pz);
+    else { mesh(g, CYL, plain('#3b3f46'), .04, 1.5, .04, px, .9, pz); box(g, BULB, .16, .08, .16, px, 1.68, pz, false); }
+  } else {                                   // avenida: separador central
+    box(g, curb, contX?CELL:.24, .14, contX?.24:CELL, px, .09, pz);
+    if (r < .3) mesh(g, ICO, plain('#5f9a4a',{flatShading:true}), .2, .22, .2, px, .3, pz);
+    else if (r < .45) {
+      mesh(g, CYL, plain('#3b3f46'), .04, 1.7, .04, px, 1.0, pz);
+      for (const o of [-.3,.3]) box(g, BULB, .14, .06, .14, px+(contX?0:o), 1.82, pz+(contX?o:0), false);
+      box(g, plain('#3b3f46'), contX?.05:.7, .04, contX?.7:.05, px, 1.87, pz);
+    }
+  }
+}
+
 function buildStreet(g, x, z, cx, cz) {
   const s = box(g, plain('#4a4e57',{roughness:.95}), CELL, .04, CELL, cx, .02, cz, false);
   s.userData.pick = { x, z, street:true };
   const isRoad = cell(x,z).road;
   const isS = (a,b) => cls(a,b) === 's';
+  if (isIsland(x, z)) { buildIsland(g, x, z, cx, cz); return; }
+  const wide = isWide(x, z);
   const sw = plain('#d2cdc2');
   const walkSides = [];
   for (const [dx,dz] of DIRS) {
@@ -597,7 +668,9 @@ function buildStreet(g, x, z, cx, cz) {
   const hor = isS(x+1,z) && isS(x-1,z), ver = isS(x,z+1) && isS(x,z-1);
   const paint = plain('#f4f1e8');
   const lineX = hor || (sd.length === 1 && sd[0][0] !== 0);
-  if ((sd.length === 2 && (hor || ver)) || sd.length === 1) {
+  if (wide) {                                // calle ancha: sin sendas en cada celda
+    streetQuad(g, x, z, cx, cz);
+  } else if ((sd.length === 2 && (hor || ver)) || sd.length === 1) {
     for (const o of [-.5, .5]) box(g, paint, lineX?.5:.08, .01, lineX?.08:.5, cx+(lineX?o:0), .045, cz+(lineX?0:o), false);
   } else if (sd.length >= 3) {
     for (const [dx,dz] of sd) for (let i=-2; i<=2; i++) {
@@ -811,7 +884,26 @@ function stepSprouts(dt) {
 /* ---------- autos, pájaros, nubes ---------- */
 const carRoot = new THREE.Group(); scene.add(carRoot);
 const cars = [];
-const streetNbs = (x,z) => DIRS.map(([dx,dz]) => [x+dx, z+dz]).filter(([a,b]) => cls(a,b) === 's');
+const streetNbs = (x,z) => DIRS.map(([dx,dz]) => [x+dx, z+dz]).filter(([a,b]) => cls(a,b) === 's' && !isIsland(a,b));
+// Elige la próxima celda: en rotondas y bulevares la isla queda a la izquierda;
+// en avenidas, cada carril tiene su sentido (el otro carril queda a la izquierda).
+function pickNext(P, pool) {
+  const [px,pz] = P;
+  let refs = [];
+  for (let dz=-1; dz<=1; dz++) for (let dx=-1; dx<=1; dx++) if ((dx || dz) && isIsland(px+dx, pz+dz)) refs.push([dx,dz]);
+  if (!refs.length && isWide(px,pz)) refs = DIRS.filter(([dx,dz]) => isWide(px+dx, pz+dz));
+  if (!refs.length) return pool[Math.floor(Math.random()*pool.length)];
+  const scored = pool.map(q => {
+    const vx = q[0]-px, vz = q[1]-pz; let s = 0;
+    for (const [rx,rz] of refs) s += rx*vz - rz*vx;
+    return [q, s];
+  });
+  const ok = scored.filter(([,s]) => s >= 0), list = ok.length ? ok : scored;
+  let tot = 0; for (const [,s] of list) tot += s > 0 ? 4 : 1;
+  let pick = Math.random()*tot;
+  for (const [q,s] of list) { pick -= s > 0 ? 4 : 1; if (pick <= 0) return q; }
+  return list[0][0];
+}
 function makeCar() {
   const g = new THREE.Group();
   const col = CARC[Math.floor(Math.random()*CARC.length)];
@@ -836,14 +928,14 @@ function updateCars(dt) {
   if (cars.length < want && streetList.length) {
     const s = streetList[Math.floor(Math.random()*streetList.length)];
     const nb = streetNbs(...s);
-    if (nb.length) {
+    if (nb.length && !isIsland(...s)) {
       const c = { mesh:makeCar(), from:s, to:nb[Math.floor(Math.random()*nb.length)], t:Math.random(), sp:1.6+Math.random()*1.2 };
       carRoot.add(c.mesh); placeCar(c, true); cars.push(c);
     }
   }
   for (let i=cars.length-1; i>=0; i--) {
     const c = cars[i];
-    if (cls(...c.from) !== 's' || cls(...c.to) !== 's' || cars.length > want+3) { carRoot.remove(c.mesh); cars.splice(i,1); continue; }
+    if (cls(...c.from) !== 's' || cls(...c.to) !== 's' || isIsland(...c.to) || cars.length > want+3) { carRoot.remove(c.mesh); cars.splice(i,1); continue; }
     c.t += c.sp*dt/CELL;
     if (c.t >= 1) {
       c.t -= 1;
@@ -851,7 +943,7 @@ function updateCars(dt) {
       const opts = nb.filter(([a,b]) => !(a === c.from[0] && b === c.from[1]));
       const pool = opts.length ? opts : nb;
       if (!pool.length) { carRoot.remove(c.mesh); cars.splice(i,1); continue; }
-      c.from = c.to; c.to = pool[Math.floor(Math.random()*pool.length)];
+      c.from = c.to; c.to = pickNext(c.from, pool);
     }
     placeCar(c, false);
   }
