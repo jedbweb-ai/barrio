@@ -1,7 +1,7 @@
 # Barrio — estado del proyecto
 
 Juego cozy para construir una ciudad moderna que se arma sola, inspirado en la mecánica de Townscaper.
-Última actualización: 2026-11-25.
+Última actualización: 2026-11-26.
 
 ## Visión (no cambiar sin que el usuario lo pida)
 - Sin objetivos, sin forma de perder, sin estadísticas ni números (población, dinero, etc.).
@@ -42,6 +42,10 @@ Juego cozy para construir una ciudad moderna que se arma sola, inspirado en la m
   Los autos respetan el sentido de cada carril y giran en las rotondas (`pickNext`, `isIsland`, `isWide`).
 - **Parques combinados:** senderos conectados, cerco, entradas, elemento central donde se juntan 4 celdas
   (fuente, cantero, juegos, glorieta, árbol grande) y lago con islote desde 3×3.
+- **Peatones:** caminan por las veredas, doblan las esquinas, cada tanto cruzan la calle, entran y salen de los
+  edificios (se achican en la puerta) y pasean por los parques (entran por las entradas con pilares, se apartan del
+  sendero y se quedan un rato). Cantidad según calles y parques, máx. 80. Sin grafo guardado: cada uno pregunta a dónde
+  puede ir al llegar a un punto (`pedOptions`, `hasWalk`, `isGate`, `updatePeds`). Dibujados con `InstancedMesh`.
 - **Ambiente:** autos, pájaros, nubes, ciclo día / atardecer / noche.
 - **Música:** todo en La menor pentatónica (La Do Re Mi Sol). De fondo, guitarra acústica sintetizada (Karplus-Strong,
   sin archivos de audio) que arpegia Am – F – C – G a 72 bpm. Cada bloque tiene su instrumento: viviendas kalimba,
@@ -60,4 +64,5 @@ Juego cozy para construir una ciudad moderna que se arma sola, inspirado en la m
 - Música: el usuario la aprobó de oído ("quedó espectacular", 2026-11-25). Falta probar el audio en celular.
   Si pide la pentatónica mayor, cambiar `PENTA` y los acordes en la sección de sonido.
 - Verificar el botón Foto para visitantes externos del artifact.
-- Ideas conversadas: peatones, grilla irregular, puentes sobre agua, plazas grandes, estaciones, pasar a Godot.
+- Peatones: los autos no frenan cuando alguien cruza (se atraviesan). Ideas: gente sentada en los bancos, perros, bicis.
+- Ideas conversadas: grilla irregular, puentes sobre agua, plazas grandes, estaciones, pasar a Godot.

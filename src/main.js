@@ -232,7 +232,7 @@ const cell = (x,z) => cells.get(key(x,z)) || EMPTY;
 function cellW(x,z) { const k = key(x,z); let c = cells.get(k); if (!c) { c = { f:[], park:false, road:false }; cells.set(k, c); } return c; }
 function tidy(x,z) { const c = cells.get(key(x,z)); if (c && !c.f.length && !c.park && !c.road) cells.delete(key(x,z)); }
 const H = (x,z) => inb(x,z) ? cell(x,z).f.length : 0;
-let CL = new Map(), streetList = [];
+let CL = new Map(), streetList = [], parkList = [];
 const cls = (x,z) => inb(x,z) ? (CL.get(key(x,z)) || 'm') : 'v';
 const center = () => ({ x:(wx(B.x0) + wx(B.x1))/2, z:(wx(B.z0) + wx(B.z1))/2 });
 const span = () => Math.max(B.x1 - B.x0 + 1, B.z1 - B.z0 + 1);
@@ -265,7 +265,7 @@ function fitWorld() {
   camera.far = Math.max(500, half*12); camera.updateProjectionMatrix();
 }
 function computeClasses() {
-  CL = new Map(); streetList = [];
+  CL = new Map(); streetList = []; parkList = [];
   // solo hace falta mirar alrededor de lo construido; el resto es pradera
   const seen = new Set();
   for (const [k0, c0] of cells) {
@@ -320,6 +320,7 @@ function classify(x, z) {
     }
     CL.set(key(x,z), k);
     if (k === 's') streetList.push([x,z]);
+    else if (k === 'p') parkList.push([x,z]);
   }
 }
 
@@ -695,6 +696,10 @@ function isLake(x,z) {
 }
 const isLawn = (x,z) => isPark(x,z) && !isLake(x,z);
 // ¿las cuatro celdas que comparten esta esquina son césped de parque? (ahí va un elemento central)
+// entrada al parque desde la calle: la celda de parque (x,z) mirando hacia (dx,dz)
+const isGate = (x,z,dx,dz) => cls(x+dx, z+dz) === 's' && hash(x, z, 80 + dx*3 + dz) < .4;
+// plazoleta suelta: una sola celda de parque, sin cerco
+const isPlaza = (x,z) => isPark(x,z) && !DIRS.some(([dx,dz]) => isPark(x+dx, z+dz));
 const quadFull = (x,z,qx,qz) => isLawn(x,z) && isLawn(x+qx,z) && isLawn(x,z+qz) && isLawn(x+qx,z+qz);
 function fountain(g, px, pz, s=1) {
   mesh(g, CYL, plain('#cfc8bb'), .7*s, .25, .7*s, px, .22, pz);
@@ -784,7 +789,7 @@ function buildPark(g, x, z, cx, cz) {
   for (const [dx,dz] of DIRS) {
     if (isPark(x+dx, z+dz)) continue;
     const along = dx !== 0;
-    const gate = cls(x+dx, z+dz) === 's' && hash(x, z, 80 + dx*3 + dz) < .4;
+    const gate = isGate(x, z, dx, dz);
     if (gate) {                              // entrada desde la calle, con pilares
       arms.push([dx,dz]);
       for (const o of [-.38,.38]) box(g, plain('#cfc8bb'), .16, .5, .16, cx+dx*(CELL/2-.08)+(along?0:o), .3, cz+dz*(CELL/2-.08)+(along?o:0));
@@ -947,6 +952,161 @@ function updateCars(dt) {
     }
     placeCar(c, false);
   }
+}
+
+/* ---------- peatones ---------- */
+// Caminan por las veredas, cruzan la calle, entran y salen de los edificios y pasean por los parques.
+// No se guarda ningún grafo: cada peatón pregunta a dónde puede ir cuando llega a un punto.
+const PED_MAX = 90, SW = CELL/2 - .225;      // SW: distancia del centro de la celda al medio de la vereda
+const OPP = [1,0,3,2];
+const toCols = a => a.map(c => new THREE.Color(c));
+const SHIRTC = toCols(['#e76f51','#f4a261','#e9c46a','#2a9d8f','#457b9d','#f1faee','#d98ba6','#8ecae6','#b5838d','#6d597a','#c8553d','#7a9e7e']);
+const PANTC = toCols(['#2f3542','#3d4a6b','#5c4a3d','#6b7280','#274060','#8a8577']);
+const SKINC = toCols(['#f3d2b3','#e0ac69','#c68642','#8d5524','#ffdbac']);
+const pedMat = plain('#ffffff', { roughness:.8 });
+function pedInst(geo, n) {
+  const m = new THREE.InstancedMesh(geo, pedMat, n);
+  m.frustumCulled = false; m.castShadow = true; m.receiveShadow = true; m.count = 0;
+  m.setColorAt(0, SKINC[0]);
+  scene.add(m); return m;
+}
+const pedLegs = pedInst(BOX, PED_MAX*2), pedBody = pedInst(BOX, PED_MAX), pedHead = pedInst(ICO, PED_MAX);
+const peds = [], pedDummy = new THREE.Object3D();
+
+// ¿la celda de calle (x,z) tiene vereda del lado di?
+function hasWalk(x, z, di) {
+  if (!isSt(x,z)) return false;
+  const nk = cls(x + DIRS[di][0], z + DIRS[di][1]);
+  if (nk === 's') return false;
+  return !(cell(x,z).road && (nk === 'm' || nk === 'v'));
+}
+// celda de parque por la que se puede caminar (no lago, no la plazoleta con fuente en el medio)
+const parkOk = (x,z) => isLawn(x,z) && !(isPlaza(x,z) && hash(x,z,7) < .18);
+const nodeOk = n => n.p ? parkOk(n.x, n.z) : hasWalk(n.x, n.z, n.d);
+const nodePos = n => n.p ? [wx(n.x), wx(n.z)] : [wx(n.x) + DIRS[n.d][0]*SW, wx(n.z) + DIRS[n.d][1]*SW];
+const sameNode = (a,b) => a && b && a.x === b.x && a.z === b.z && !a.p === !b.p && (a.p || a.d === b.d);
+const W = (x,z,d) => ({ x, z, d }), P = (x,z) => ({ x, z, p:true });
+
+// Opciones desde un punto: { node, via, w (peso), cross, door }
+function pedOptions(n) {
+  const out = [], cx = wx(n.x), cz = wx(n.z);
+  if (n.p) {
+    for (let di=0; di<4; di++) {
+      const [dx,dz] = DIRS[di], ax = n.x+dx, az = n.z+dz;
+      if (parkOk(ax,az)) out.push({ node:P(ax,az), w:3 });
+      else if (hasWalk(ax,az,OPP[di]) && (isPlaza(n.x,n.z) || isGate(n.x,n.z,dx,dz))) out.push({ node:W(ax,az,OPP[di]), w:1.5 });
+    }
+    return out;
+  }
+  const [dx,dz] = DIRS[n.d];
+  for (const pi of (n.d < 2 ? [2,3] : [0,1])) {
+    const [px,pz] = DIRS[pi], ax = n.x+px, az = n.z+pz;
+    if (hasWalk(n.x,n.z,pi)) out.push({ node:W(n.x,n.z,pi), via:[cx+(dx+px)*SW, cz+(dz+pz)*SW], w:4 });   // esquina de la misma celda
+    else if (isSt(ax,az)) {
+      if (hasWalk(ax,az,n.d)) out.push({ node:W(ax,az,n.d), w:4 });                                      // sigue derecho
+      else if (hasWalk(ax+dx,az+dz,OPP[pi]))                                                             // dobla la esquina de la manzana
+        out.push({ node:W(ax+dx,az+dz,OPP[pi]), via:[cx+px*(CELL-SW)+dx*SW, cz+pz*(CELL-SW)+dz*SW], w:4 });
+    }
+  }
+  let qx = n.x, qz = n.z;                    // cruzar a la vereda de enfrente (hasta 3 carriles)
+  for (let i=0; i<3; i++) {
+    if (hasWalk(qx,qz,OPP[n.d])) { out.push({ node:W(qx,qz,OPP[n.d]), w:.5, cross:true }); break; }
+    qx -= dx; qz -= dz;
+    if (!isSt(qx,qz) || isIsland(qx,qz)) break;
+  }
+  const bx = n.x+dx, bz = n.z+dz, nk = cls(bx,bz);
+  if (nk === 'b') out.push({ door:[cx+dx*(SW+.32), cz+dz*(SW+.32)], w:.45 });
+  else if (nk === 'p' && parkOk(bx,bz) && (isPlaza(bx,bz) || isGate(bx,bz,-dx,-dz))) out.push({ node:P(bx,bz), w:2.5 });
+  return out;
+}
+function pedChoose(p) {
+  let opts = pedOptions(p.node);
+  if (p.steps < 3) opts = opts.filter(o => !o.door);
+  const fwd = opts.filter(o => o.door || !sameNode(o.node, p.prev));
+  const list = fwd.length ? fwd : opts;
+  if (!list.length) return null;
+  let tot = 0; for (const o of list) tot += o.w;
+  let r = Math.random()*tot;
+  for (const o of list) { r -= o.w; if (r <= 0) return o; }
+  return list[0];
+}
+function spawnPed(fromDoor) {
+  let node = null;
+  const parkShare = parkList.length*1.5 / (parkList.length*1.5 + streetList.length + .001);
+  for (let tries=0; tries<8 && !node; tries++) {
+    if (Math.random() < parkShare) {
+      const [x,z] = parkList[Math.floor(Math.random()*parkList.length)];
+      if (parkOk(x,z)) node = P(x,z);
+    } else if (streetList.length) {
+      const [x,z] = streetList[Math.floor(Math.random()*streetList.length)], d = Math.floor(Math.random()*4);
+      if (hasWalk(x,z,d) && (!fromDoor || tries > 5 || cls(x+DIRS[d][0], z+DIRS[d][1]) === 'b')) node = W(x,z,d);
+    }
+  }
+  if (!node) return;
+  const [nx,nz] = nodePos(node);
+  const p = { x:nx, z:nz, node, prev:null, path:[], s:0, gy:.12, low:false, ang:Math.random()*6.28, wait:0, steps:0, leaving:false, moving:false,
+    sp:.45+Math.random()*.35, ph:Math.random()*6.28, tall:.88+Math.random()*.26,
+    shirt:SHIRTC[Math.floor(Math.random()*SHIRTC.length)], pant:PANTC[Math.floor(Math.random()*PANTC.length)], skin:SKINC[Math.floor(Math.random()*SKINC.length)] };
+  if (!node.p && cls(node.x+DIRS[node.d][0], node.z+DIRS[node.d][1]) === 'b' && fromDoor) {   // sale por la puerta
+    p.x = nx + DIRS[node.d][0]*.32; p.z = nz + DIRS[node.d][1]*.32; p.path = [[nx,nz]];
+  } else p.wait = Math.random()*1.5;
+  peds.push(p);
+}
+function updatePeds(dt, t) {
+  const want = Math.min(PED_MAX-10, Math.floor(streetList.length*.45 + parkList.length*.8));
+  if (peds.length < want) spawnPed(peds.length > want*.6);
+  else if (peds.length > want+4) peds[Math.floor(Math.random()*peds.length)].leaving = true;
+  for (let i=peds.length-1; i>=0; i--) {
+    const p = peds[i];
+    if (!p.leaving && !nodeOk(p.node)) p.leaving = true, p.path = [];     // le cambiaron el lugar: se va
+    p.moving = false;
+    if (p.path.length) {
+      const [tx,tz] = p.path[0], ex = tx-p.x, ez = tz-p.z, d = Math.hypot(ex,ez), stepLen = p.sp*dt;
+      if (d <= stepLen) { p.x = tx; p.z = tz; p.path.shift(); if (!p.path.length) p.low = false; }
+      else { p.x += ex/d*stepLen; p.z += ez/d*stepLen; let a = Math.atan2(ex,ez) - p.ang; a = Math.atan2(Math.sin(a), Math.cos(a)); p.ang += a*Math.min(1, dt*10); }
+      p.moving = true;
+    } else if (p.leaving) {
+      p.s -= dt*4;
+      if (p.s <= 0) { peds.splice(i,1); continue; }
+    } else if (p.wait > 0) p.wait -= dt;
+    else {
+      p.steps++;
+      if (p.node.p && p.strolled !== p.steps-1 && Math.random() < .4) {   // en el parque: se aparta del sendero y se queda un rato
+        p.strolled = p.steps; p.wait = 3 + Math.random()*6;
+        p.path = [[wx(p.node.x)+(Math.random()-.5)*1.0, wx(p.node.z)+(Math.random()-.5)*1.0]];
+      } else {
+        const o = pedChoose(p);
+        if (!o) { p.wait = 2 + Math.random()*4; if (p.node.p) p.path = [[wx(p.node.x)+(Math.random()-.5)*1.0, wx(p.node.z)+(Math.random()-.5)*1.0]]; }
+        else if (o.door) { p.path = [o.door]; p.leaving = true; }
+        else {
+          p.prev = p.node; p.node = o.node; p.low = !!o.cross;
+          p.path = o.via ? [o.via, nodePos(o.node)] : [nodePos(o.node)];
+          if (!o.node.p && Math.random() < .05) p.wait = 1 + Math.random()*2.5;   // cada tanto frena a mirar
+        }
+      }
+    }
+    if (!p.leaving) p.s = Math.min(1, p.s + dt*3);
+    p.gy += ((p.low ? .045 : .12) - p.gy) * Math.min(1, dt*8);
+  }
+  // dibujar: dos piernas, cuerpo y cabeza por persona (todo instanciado)
+  const D = pedDummy, n = peds.length;
+  for (let i=0; i<n; i++) {
+    const p = peds[i], s = p.s * p.tall, sw = p.moving ? Math.sin(t*p.sp*17 + p.ph) : 0, bob = Math.abs(sw)*.02*s;
+    const fx = Math.sin(p.ang), fz = Math.cos(p.ang);
+    D.rotation.set(0, p.ang, 0);
+    for (let j=0; j<2; j++) {
+      const side = j ? .034 : -.034, f = (j ? sw : -sw)*.05*s;
+      D.position.set(p.x + fz*side*s + fx*f, p.gy + .065*s + Math.max(0, j ? sw : -sw)*.02*s, p.z - fx*side*s + fz*f);
+      D.scale.set(.055*s, .13*s, .06*s); D.updateMatrix();
+      pedLegs.setMatrixAt(i*2+j, D.matrix); pedLegs.setColorAt(i*2+j, p.pant);
+    }
+    D.position.set(p.x, p.gy + .215*s + bob, p.z); D.scale.set(.15*s, .18*s, .085*s); D.updateMatrix();
+    pedBody.setMatrixAt(i, D.matrix); pedBody.setColorAt(i, p.shirt);
+    D.position.set(p.x, p.gy + .365*s + bob, p.z); D.scale.setScalar(.062*s); D.updateMatrix();
+    pedHead.setMatrixAt(i, D.matrix); pedHead.setColorAt(i, p.skin);
+  }
+  pedLegs.count = n*2; pedBody.count = pedHead.count = n;
+  for (const m of [pedLegs, pedBody, pedHead]) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; }
 }
 
 const birds = [];
@@ -1346,6 +1506,7 @@ renderer.setAnimationLoop(() => {
   stepIsland(dt);
   stepSprouts(dt);
   updateCars(dt);
+  updatePeds(dt, t);
   const ctr = center(), grow = Math.max(1, span() / 20);
   for (const b of birds) {
     const u = b.userData; u.a += u.sp*dt;
